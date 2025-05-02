@@ -10,3 +10,4 @@ python-dotenv # For managing environment variables
 flask==2.0.1
 PyPDF2==2.12.1
 Werkzeug==2.0.1
+openai==1.7.0

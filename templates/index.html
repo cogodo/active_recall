@@ -2,17 +2,20 @@
 <html>
 
 <head>
-    <title>PDF Text Extractor</title>
+    <title>PDF Text Extractor with Active Recall</title>
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 800px;
+            max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
+            color: #333;
         }
 
-        h1 {
-            color: #333;
+        h1,
+        h2,
+        h3 {
+            color: #2c3e50;
         }
 
         .upload-form {
@@ -20,48 +23,142 @@
             padding: 20px;
             border: 1px solid #ddd;
             border-radius: 5px;
+            background-color: #f9f9f9;
         }
 
-        .result {
+        .content-container {
+            display: flex;
+            gap: 20px;
             margin-top: 20px;
+        }
+
+        .text-content {
+            flex: 3;
             padding: 20px;
             border: 1px solid #ddd;
             border-radius: 5px;
             background-color: #f9f9f9;
-            display: none;
+            max-height: 800px;
+            overflow-y: auto;
+        }
+
+        .questions-container {
+            flex: 2;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f0f7ff;
+            max-height: 800px;
+            overflow-y: auto;
         }
 
         .page {
             margin-bottom: 15px;
-            padding: 10px;
+            padding: 15px;
             border-bottom: 1px solid #eee;
+        }
+
+        .question {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-left: 3px solid #3498db;
+            background-color: rgba(255, 255, 255, 0.7);
         }
 
         .error {
             color: red;
             font-weight: bold;
         }
+
+        button {
+            padding: 10px 15px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        button:hover {
+            background-color: #2980b9;
+        }
+
+        input[type="file"] {
+            display: block;
+            margin-bottom: 10px;
+        }
+
+        #loading {
+            padding: 20px;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            border: 3px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top-color: #3498db;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        .instructions {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #e8f4f8;
+            border-left: 4px solid #3498db;
+            border-radius: 0 5px 5px 0;
+        }
     </style>
 </head>
 
 <body>
-    <h1>PDF Text Extractor</h1>
+    <h1>PDF Text Extractor with Active Recall</h1>
+
+    <div class="instructions">
+        <h3>How it works:</h3>
+        <p>1. Upload a PDF document</p>
+        <p>2. The text will be extracted from the PDF</p>
+        <p>3. AI will generate active recall questions based on the content</p>
+        <p>4. Review the questions to test your understanding of the material</p>
+    </div>
 
     <div class="upload-form">
         <h2>Upload a PDF File</h2>
         <form id="upload-form" enctype="multipart/form-data">
             <input type="file" name="pdf_file" id="pdf-file" accept="application/pdf" required>
-            <button type="submit">Extract Text</button>
+            <button type="submit">Extract Text & Generate Questions</button>
         </form>
     </div>
 
     <div id="loading" style="display: none;">
-        <p>Processing PDF, please wait...</p>
+        <div class="loading-spinner"></div>
+        <p>Processing PDF and generating questions, please wait...</p>
     </div>
 
-    <div id="result" class="result">
-        <h2>Extracted Text</h2>
-        <div id="text-content"></div>
+    <div id="result" style="display: none;">
+        <div class="content-container">
+            <div id="text-content" class="text-content">
+                <h2>Extracted Text</h2>
+                <div id="extracted-pages"></div>
+            </div>
+
+            <div id="questions-container" class="questions-container">
+                <h2>Active Recall Questions</h2>
+                <p>Test your understanding by answering these questions based on the text:</p>
+                <div id="questions-list"></div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -97,10 +194,10 @@
                         return;
                     }
 
-                    const textContent = document.getElementById('text-content');
-                    textContent.innerHTML = '';
-
                     // Display the extracted text by page
+                    const extractedPages = document.getElementById('extracted-pages');
+                    extractedPages.innerHTML = '';
+
                     data.text.forEach((pageText, index) => {
                         const pageDiv = document.createElement('div');
                         pageDiv.className = 'page';
@@ -111,10 +208,26 @@
 
                         const textPara = document.createElement('pre');
                         textPara.style.whiteSpace = 'pre-wrap';
+                        textPara.style.fontFamily = 'inherit';
                         textPara.textContent = pageText;
                         pageDiv.appendChild(textPara);
 
-                        textContent.appendChild(pageDiv);
+                        extractedPages.appendChild(pageDiv);
+                    });
+
+                    // Display the generated questions
+                    const questionsList = document.getElementById('questions-list');
+                    questionsList.innerHTML = '';
+
+                    data.questions.forEach((question, index) => {
+                        const questionDiv = document.createElement('div');
+                        questionDiv.className = 'question';
+
+                        const questionText = document.createElement('p');
+                        questionText.innerHTML = `<strong>Q${index + 1}:</strong> ${question}`;
+                        questionDiv.appendChild(questionText);
+
+                        questionsList.appendChild(questionDiv);
                     });
 
                     // Show the result section
