@@ -1,0 +1,12 @@
+langgraph
+langchain
+fastapi
+uvicorn
+requests # For calling Mistral API
+mistralai # For calling Mistral chat models
+python-multipart # For FastAPI file uploads 
+boto3
+python-dotenv # For managing environment variables
+flask==2.0.1
+PyPDF2==2.12.1
+Werkzeug==2.0.1

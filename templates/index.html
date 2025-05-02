@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>PDF Text Extractor</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        .upload-form {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        .result {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+            display: none;
+        }
+
+        .page {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .error {
+            color: red;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>PDF Text Extractor</h1>
+
+    <div class="upload-form">
+        <h2>Upload a PDF File</h2>
+        <form id="upload-form" enctype="multipart/form-data">
+            <input type="file" name="pdf_file" id="pdf-file" accept="application/pdf" required>
+            <button type="submit">Extract Text</button>
+        </form>
+    </div>
+
+    <div id="loading" style="display: none;">
+        <p>Processing PDF, please wait...</p>
+    </div>
+
+    <div id="result" class="result">
+        <h2>Extracted Text</h2>
+        <div id="text-content"></div>
+    </div>
+
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+
+            const fileInput = document.getElementById('pdf-file');
+            const file = fileInput.files[0];
+
+            if (!file) {
+                alert('Please select a PDF file');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('pdf_file', file);
+
+            // Show loading indicator
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('result').style.display = 'none';
+
+            fetch('/upload', {
+                method: 'POST',
+                body: formData
+            })
+                .then(response => response.json())
+                .then(data => {
+                    // Hide loading indicator
+                    document.getElementById('loading').style.display = 'none';
+
+                    if (data.error) {
+                        alert('Error: ' + data.error);
+                        return;
+                    }
+
+                    const textContent = document.getElementById('text-content');
+                    textContent.innerHTML = '';
+
+                    // Display the extracted text by page
+                    data.text.forEach((pageText, index) => {
+                        const pageDiv = document.createElement('div');
+                        pageDiv.className = 'page';
+
+                        const pageHeader = document.createElement('h3');
+                        pageHeader.textContent = `Page ${index + 1}`;
+                        pageDiv.appendChild(pageHeader);
+
+                        const textPara = document.createElement('pre');
+                        textPara.style.whiteSpace = 'pre-wrap';
+                        textPara.textContent = pageText;
+                        pageDiv.appendChild(textPara);
+
+                        textContent.appendChild(pageDiv);
+                    });
+
+                    // Show the result section
+                    document.getElementById('result').style.display = 'block';
+                })
+                .catch(error => {
+                    document.getElementById('loading').style.display = 'none';
+                    alert('An error occurred: ' + error);
+                });
+        });
+    </script>
+</body>
+
+</html>
