@@ -1,21 +1,25 @@
-# PDF Text Extractor with Active Recall
+# Active Recall Study Assistant
 
-A web application that extracts text from PDF files and uses OpenAI to generate active recall questions based on the content.
+A conversational web application that helps users practice active recall by generating topic-specific questions and providing feedback on answers.
 
 ## Features
 
-- Upload PDF files through the web interface
-- Extract text from PDF files (works on text-based PDFs, not scanned documents)
-- Generate 10 active recall questions automatically using OpenAI
-- View extracted text and questions side by side
-- Simple and modern user interface
+- Chat-based interface for topic identification and question generation
+- Intelligent analysis of user study goals
+- Generation of high-quality active recall questions tailored to specific topics
+- Feedback on user responses and hints when requested
+- Ability to switch topics seamlessly within the conversation
+- Session management to maintain conversation context
+
+## What is Active Recall?
+
+Active recall is a learning technique that involves actively stimulating memory during the learning process. It's one of the most effective study methods because it strengthens neural connections and improves long-term retention. This application helps users practice active recall by generating relevant questions about their chosen topics.
 
 ## Requirements
 
 - Python 3.6+
 - Flask
-- PyPDF2
-- OpenAI API key
+- OpenAI API key (GPT-4 access recommended)
 
 ## Installation
 
@@ -33,9 +37,8 @@ A web application that extracts text from PDF files and uses OpenAI to generate 
    ```
 
 4. Set up your OpenAI API key:
-   - Sign up for an OpenAI API key at https://platform.openai.com/
-   - Copy the file `.env.example` to `.env` 
-   - Add your OpenAI API key to the `.env` file:
+   - Create a `.env` file in the project root 
+   - Add your OpenAI API key:
      ```
      OPENAI_API_KEY=your_api_key_here
      ```
@@ -52,34 +55,24 @@ A web application that extracts text from PDF files and uses OpenAI to generate 
    http://localhost:5001
    ```
 
-3. Upload a PDF file and wait for the extraction and question generation to complete
-4. Review the extracted text and the generated active recall questions
+3. Start chatting with the assistant by telling it what topic you want to review
+4. Try to answer the generated questions to practice active recall
+5. Ask for hints or feedback if needed
+6. Change topics any time by asking to review something new
 
 ## How it Works
 
-1. PDF files are uploaded to the server
-2. PyPDF2 extracts text from each page of the PDF
-3. The extracted text is sent to OpenAI's GPT-3.5-Turbo model (the most cost-effective option)
-4. The AI generates 10 active recall questions based on the content
-5. Both the text and questions are displayed to the user
+1. The user tells the assistant what topic they want to review
+2. The application identifies the specific topic using GPT-4
+3. It generates 10 active recall questions tailored to that topic
+4. Questions are displayed in the sidebar for easy reference
+5. The user can discuss the topic and attempt to answer questions
+6. The assistant provides helpful feedback and encouragement
+7. The user can change topics at any time to study something new
 
-## Cost Considerations
+## Technology
 
-- OpenAI's GPT-3.5-Turbo is used as it's the most cost-effective model with good results
-- The application limits the amount of text sent to OpenAI to control costs
-- Each query typically costs less than $0.01 USD
-
-## Structure
-
-- `app.py` - Main Flask application with PDF extraction and OpenAI integration
-- `templates/index.html` - HTML template for the web interface
-- `uploads/` - Temporary storage for uploaded PDFs (created automatically)
-- `requirements.txt` - Python dependencies
-- `.env` - Environment variables file (you need to create this from .env.example)
-
-## Notes
-
-- The application has a 16MB file size limit for uploads (can be modified in app.py)
-- This application works best with PDFs that contain actual text data, not scanned images
-- For scanned documents, you would need to incorporate OCR (Optical Character Recognition)
-- The text sent to OpenAI is limited to approximately 3000 tokens to control costs
+- **Flask** for the web server and session management
+- **OpenAI GPT-4** for intelligent conversation and question generation
+- **JavaScript** for the dynamic chat interface
+- **Flask Sessions** for maintaining conversation state

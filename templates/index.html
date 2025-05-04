@@ -2,243 +2,126 @@
 <html>
 
 <head>
-    <title>PDF Text Extractor with Active Recall</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-            color: #333;
-        }
+    <title>Active Recall Study Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+    <!-- Socket.IO client -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.js"></script>
+    <!-- Cartesia JavaScript SDK -->
+    <script src="https://cdn.jsdelivr.net/npm/@cartesia/cartesia-js/dist/index.min.js"></script>
+    <script>
+        // Check if Cartesia SDK loaded properly
+        window.addEventListener('load', function () {
+            console.log("Page loaded, checking Cartesia SDK...");
+            if (typeof Cartesia === 'undefined') {
+                console.error("ERROR: Cartesia SDK failed to load. TTS functionality will not work.");
+            } else {
+                console.log("Cartesia SDK loaded successfully:", Cartesia);
 
-        h1,
-        h2,
-        h3 {
-            color: #2c3e50;
-        }
+                // Add a function to test listing voices
+                window.listCartesiaVoices = async function () {
+                    try {
+                        console.log("Attempting to list Cartesia voices...");
+                        // First get the Cartesia client
+                        const response = await fetch('/get-cartesia-key');
+                        const data = await response.json();
 
-        .upload-form {
-            margin: 20px 0;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-        }
+                        if (!data.available) {
+                            console.warn("Cartesia API key not available");
+                            return null;
+                        }
 
-        .content-container {
-            display: flex;
-            gap: 20px;
-            margin-top: 20px;
-        }
+                        // Create a client just for this test
+                        const client = new Cartesia.Client({
+                            apiKey: data.key,
+                            cartesiaVersion: "2025-04-16"
+                        });
 
-        .text-content {
-            flex: 3;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f9f9f9;
-            max-height: 800px;
-            overflow-y: auto;
-        }
+                        // List all available voices
+                        console.log("Fetching voice list...");
+                        const voices = await client.voices.list();
+                        console.log("Available Cartesia voices:", voices);
+                        return voices;
+                    } catch (error) {
+                        console.error("Error listing Cartesia voices:", error);
+                        return null;
+                    }
+                };
 
-        .questions-container {
-            flex: 2;
-            padding: 20px;
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            background-color: #f0f7ff;
-            max-height: 800px;
-            overflow-y: auto;
-        }
-
-        .page {
-            margin-bottom: 15px;
-            padding: 15px;
-            border-bottom: 1px solid #eee;
-        }
-
-        .question {
-            margin-bottom: 15px;
-            padding: 10px;
-            border-left: 3px solid #3498db;
-            background-color: rgba(255, 255, 255, 0.7);
-        }
-
-        .error {
-            color: red;
-            font-weight: bold;
-        }
-
-        button {
-            padding: 10px 15px;
-            background-color: #3498db;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-
-        button:hover {
-            background-color: #2980b9;
-        }
-
-        input[type="file"] {
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        #loading {
-            padding: 20px;
-            text-align: center;
-            font-weight: bold;
-        }
-
-        .loading-spinner {
-            display: inline-block;
-            width: 30px;
-            height: 30px;
-            border: 3px solid rgba(0, 0, 0, 0.1);
-            border-radius: 50%;
-            border-top-color: #3498db;
-            animation: spin 1s ease-in-out infinite;
-            margin-right: 10px;
-        }
-
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
+                console.log("Voice listing function added. Use window.listCartesiaVoices() in console to test");
             }
-        }
-
-        .instructions {
-            margin: 20px 0;
-            padding: 15px;
-            background-color: #e8f4f8;
-            border-left: 4px solid #3498db;
-            border-radius: 0 5px 5px 0;
-        }
-    </style>
+        });
+    </script>
 </head>
 
 <body>
-    <h1>PDF Text Extractor with Active Recall</h1>
+    <h1>Active Recall Study Assistant</h1>
 
     <div class="instructions">
-        <h3>How it works:</h3>
-        <p>1. Upload a PDF document</p>
-        <p>2. The text will be extracted from the PDF</p>
-        <p>3. AI will generate active recall questions based on the content</p>
-        <p>4. Review the questions to test your understanding of the material</p>
+        <h3>How to use this assistant:</h3>
+        <p>1. Tell me what topic you want to review (e.g., "I want to review photosynthesis" or "Help me practice
+            JavaScript closures")</p>
+        <p>2. I'll generate active recall questions about your topic</p>
+        <p>3. Try to answer each question to test your knowledge</p>
+        <p>4. Get feedback or ask for hints if you're stuck</p>
+        <p>5. Change topics anytime by saying "I want to review [new topic]"</p>
+
+        <h3>Voice Commands:</h3>
+        <p>• Click the 🎤 microphone button to enter voice conversation mode (powered by Whisper)</p>
+        <p>• <strong>Browser will ask for microphone permission</strong> - you must allow this to use voice features</p>
+        <p>• Voice levels will be displayed to show when you're speaking</p>
+        <p>• In voice conversation mode, just speak naturally - pauses are detected automatically</p>
+        <p>• Say "hint" or "help" to get assistance with the current question</p>
+        <p>• Say "next question" or "next" to move to the next question</p>
+        <p>• Say "repeat" or "say again" to have the last response repeated</p>
+        <p>• Say "stop listening" to exit voice conversation mode</p>
+        <p>• Say "clear chat" to start a fresh conversation</p>
+        <p>• Toggle "Auto-read responses" to hear all assistant responses with Cartesia TTS</p>
+        <p class="security-note">• This app runs on <strong>localhost</strong> for safe testing</p>
     </div>
 
-    <div class="upload-form">
-        <h2>Upload a PDF File</h2>
-        <form id="upload-form" enctype="multipart/form-data">
-            <input type="file" name="pdf_file" id="pdf-file" accept="application/pdf" required>
-            <button type="submit">Extract Text & Generate Questions</button>
-        </form>
-    </div>
-
-    <div id="loading" style="display: none;">
-        <div class="loading-spinner"></div>
-        <p>Processing PDF and generating questions, please wait...</p>
-    </div>
-
-    <div id="result" style="display: none;">
-        <div class="content-container">
-            <div id="text-content" class="text-content">
-                <h2>Extracted Text</h2>
-                <div id="extracted-pages"></div>
+    <div class="chat-container">
+        <div class="chat-area">
+            <div id="chat-messages" class="chat-messages"></div>
+            <div id="typing-indicator" class="typing-indicator">Assistant is typing...</div>
+            <div class="chat-input">
+                <input type="text" id="user-input" placeholder="Ask Spaced">
+                <button id="send-button">Send</button>
+                <div class="voice-controls">
+                    <button id="mic-button" class="mic-button" title="Click to toggle voice conversation mode">
+                        <i>🎤</i>
+                    </button>
+                </div>
+                <div id="listening-indicator" class="listening-indicator">Listening...</div>
             </div>
-
-            <div id="questions-container" class="questions-container">
-                <h2>Active Recall Questions</h2>
-                <p>Test your understanding by answering these questions based on the text:</p>
-                <div id="questions-list"></div>
+            <div class="voice-toggle">
+                <input type="checkbox" id="voice-mode" name="voice-mode">
+                <label for="voice-mode">Auto-read responses (Cartesia)</label>
             </div>
+        </div>
+        <div class="question-area">
+            <h2>Study Questions</h2>
+            <p>After you specify a topic, active recall questions will appear here.</p>
+            <div id="questions-list"></div>
         </div>
     </div>
 
-    <script>
-        document.getElementById('upload-form').addEventListener('submit', function (e) {
-            e.preventDefault();
+    <div id="error-message" class="error"></div>
 
-            const fileInput = document.getElementById('pdf-file');
-            const file = fileInput.files[0];
+    <div id="continuous-indicator" class="continuous-mode-indicator">Voice Conversation Mode Active (OpenAI Whisper API)
+    </div>
 
-            if (!file) {
-                alert('Please select a PDF file');
-                return;
-            }
+    <!-- Audio visualizer for showing speech levels -->
+    <div id="audio-visualizer" class="audio-visualizer">
+        <div id="visualizer-bars" class="visualizer-bars">
+            <!-- Bars will be dynamically created -->
+        </div>
+        <div class="recording-indicator">
+            <div class="recording-dot"></div>
+            <div class="recording-label">Listening with OpenAI Whisper...</div>
+        </div>
+    </div>
 
-            const formData = new FormData();
-            formData.append('pdf_file', file);
-
-            // Show loading indicator
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('result').style.display = 'none';
-
-            fetch('/upload', {
-                method: 'POST',
-                body: formData
-            })
-                .then(response => response.json())
-                .then(data => {
-                    // Hide loading indicator
-                    document.getElementById('loading').style.display = 'none';
-
-                    if (data.error) {
-                        alert('Error: ' + data.error);
-                        return;
-                    }
-
-                    // Display the extracted text by page
-                    const extractedPages = document.getElementById('extracted-pages');
-                    extractedPages.innerHTML = '';
-
-                    data.text.forEach((pageText, index) => {
-                        const pageDiv = document.createElement('div');
-                        pageDiv.className = 'page';
-
-                        const pageHeader = document.createElement('h3');
-                        pageHeader.textContent = `Page ${index + 1}`;
-                        pageDiv.appendChild(pageHeader);
-
-                        const textPara = document.createElement('pre');
-                        textPara.style.whiteSpace = 'pre-wrap';
-                        textPara.style.fontFamily = 'inherit';
-                        textPara.textContent = pageText;
-                        pageDiv.appendChild(textPara);
-
-                        extractedPages.appendChild(pageDiv);
-                    });
-
-                    // Display the generated questions
-                    const questionsList = document.getElementById('questions-list');
-                    questionsList.innerHTML = '';
-
-                    data.questions.forEach((question, index) => {
-                        const questionDiv = document.createElement('div');
-                        questionDiv.className = 'question';
-
-                        const questionText = document.createElement('p');
-                        questionText.innerHTML = `<strong>Q${index + 1}:</strong> ${question}`;
-                        questionDiv.appendChild(questionText);
-
-                        questionsList.appendChild(questionDiv);
-                    });
-
-                    // Show the result section
-                    document.getElementById('result').style.display = 'block';
-                })
-                .catch(error => {
-                    document.getElementById('loading').style.display = 'none';
-                    alert('An error occurred: ' + error);
-                });
-        });
-    </script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 
 </html>

@@ -2,12 +2,13 @@ langgraph
 langchain
 fastapi
 uvicorn
-requests # For calling Mistral API
-mistralai # For calling Mistral chat models
-python-multipart # For FastAPI file uploads 
+requests
+python-multipart
 boto3
 python-dotenv # For managing environment variables
 flask==2.0.1
-PyPDF2==2.12.1
 Werkzeug==2.0.1
-openai==1.7.0
+openai>=1.12.0
+flask-socketio>=5.0.4
+websocket-client>=1.5.1
+cartesia
