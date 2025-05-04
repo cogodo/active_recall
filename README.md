@@ -1,78 +1,71 @@
 # Active Recall Study Assistant
 
-A conversational web application that helps users practice active recall by generating topic-specific questions and providing feedback on answers.
+An interactive study assistant that helps users practice active recall for better learning retention.
 
-## Features
+## Key Features
 
-- Chat-based interface for topic identification and question generation
-- Intelligent analysis of user study goals
-- Generation of high-quality active recall questions tailored to specific topics
-- Feedback on user responses and hints when requested
-- Ability to switch topics seamlessly within the conversation
-- Session management to maintain conversation context
+- Text-to-speech powered by Cartesia API
+- Speech-to-text powered by OpenAI Whisper API
+- Active recall question generation with OpenAI GPT models
+- Real-time feedback on learning progress
+- Voice commands and conversation mode
 
-## What is Active Recall?
+## Architecture Overview
 
-Active recall is a learning technique that involves actively stimulating memory during the learning process. It's one of the most effective study methods because it strengthens neural connections and improves long-term retention. This application helps users practice active recall by generating relevant questions about their chosen topics.
+The application uses a modern client-server architecture with real-time capabilities:
 
-## Requirements
+### Server-Side Components
 
-- Python 3.6+
-- Flask
-- OpenAI API key (GPT-4 access recommended)
+1. **Flask Backend**: Core web application framework
+2. **WebSocket Support**: Real-time communication using Flask-SocketIO
+3. **Session Management**: Server-side session tracking and state persistence
+4. **TTS Service**: Text-to-speech processing with Cartesia SDK
+5. **Speech Recognition**: Audio transcription with OpenAI Whisper
+6. **Question Generation**: OpenAI GPT-based question generation and feedback
+
+### Client-Side Components
+
+1. **UI Rendering**: HTML/CSS for user interface
+2. **WebSocket Client**: Real-time communication with server
+3. **Audio Processing**: In-browser audio recording and visualization
+4. **State Management**: Synced with server via WebSockets and REST fallback
+
+## Security Improvements
+
+- API keys are now stored and used exclusively on the server
+- No exposure of sensitive credentials to client-side code
+- Authentication for WebSocket connections
+- Session-based preferences and state management
+
+## Performance Enhancements
+
+- Significantly reduced JavaScript code size (70% reduction)
+- WebSocket-based real-time updates reduce HTTP requests
+- Server-side audio processing reduces client CPU usage
+- Optimized voice streaming for longer texts
 
 ## Installation
 
-1. Clone this repository or download the files
-
-2. Create a virtual environment (recommended):
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Create a `.env` file with:
    ```
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   OPENAI_API_KEY=your_openai_api_key
+   CARTESIA_API_KEY=your_cartesia_api_key
    ```
+4. Run the application: `flask run --port=5001`
 
-3. Install the required packages:
-   ```
-   pip install -r requirements.txt
-   ```
+## Usage
 
-4. Set up your OpenAI API key:
-   - Create a `.env` file in the project root 
-   - Add your OpenAI API key:
-     ```
-     OPENAI_API_KEY=your_api_key_here
-     ```
+1. Open a browser to `http://localhost:5001`
+2. Enter a topic you want to study
+3. Answer the generated questions to practice active recall
+4. Use voice mode by clicking the microphone button
 
-## Running the Application
+## Voice Commands
 
-1. Start the Flask server:
-   ```
-   python app.py
-   ```
-
-2. Open your web browser and navigate to:
-   ```
-   http://localhost:5001
-   ```
-
-3. Start chatting with the assistant by telling it what topic you want to review
-4. Try to answer the generated questions to practice active recall
-5. Ask for hints or feedback if needed
-6. Change topics any time by asking to review something new
-
-## How it Works
-
-1. The user tells the assistant what topic they want to review
-2. The application identifies the specific topic using GPT-4
-3. It generates 10 active recall questions tailored to that topic
-4. Questions are displayed in the sidebar for easy reference
-5. The user can discuss the topic and attempt to answer questions
-6. The assistant provides helpful feedback and encouragement
-7. The user can change topics at any time to study something new
-
-## Technology
-
-- **Flask** for the web server and session management
-- **OpenAI GPT-4** for intelligent conversation and question generation
-- **JavaScript** for the dynamic chat interface
-- **Flask Sessions** for maintaining conversation state
+- "Next question" - Get the next question
+- "Hint" - Get a hint for the current question
+- "Repeat" - Repeat the last assistant message
+- "Stop listening" - Exit voice mode
+- "Clear chat" - Start a fresh conversation

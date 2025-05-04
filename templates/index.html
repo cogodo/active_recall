@@ -6,51 +6,6 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
     <!-- Socket.IO client -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.js"></script>
-    <!-- Cartesia JavaScript SDK -->
-    <script src="https://cdn.jsdelivr.net/npm/@cartesia/cartesia-js/dist/index.min.js"></script>
-    <script>
-        // Check if Cartesia SDK loaded properly
-        window.addEventListener('load', function () {
-            console.log("Page loaded, checking Cartesia SDK...");
-            if (typeof Cartesia === 'undefined') {
-                console.error("ERROR: Cartesia SDK failed to load. TTS functionality will not work.");
-            } else {
-                console.log("Cartesia SDK loaded successfully:", Cartesia);
-
-                // Add a function to test listing voices
-                window.listCartesiaVoices = async function () {
-                    try {
-                        console.log("Attempting to list Cartesia voices...");
-                        // First get the Cartesia client
-                        const response = await fetch('/get-cartesia-key');
-                        const data = await response.json();
-
-                        if (!data.available) {
-                            console.warn("Cartesia API key not available");
-                            return null;
-                        }
-
-                        // Create a client just for this test
-                        const client = new Cartesia.Client({
-                            apiKey: data.key,
-                            cartesiaVersion: "2025-04-16"
-                        });
-
-                        // List all available voices
-                        console.log("Fetching voice list...");
-                        const voices = await client.voices.list();
-                        console.log("Available Cartesia voices:", voices);
-                        return voices;
-                    } catch (error) {
-                        console.error("Error listing Cartesia voices:", error);
-                        return null;
-                    }
-                };
-
-                console.log("Voice listing function added. Use window.listCartesiaVoices() in console to test");
-            }
-        });
-    </script>
 </head>
 
 <body>
@@ -75,7 +30,7 @@
         <p>• Say "repeat" or "say again" to have the last response repeated</p>
         <p>• Say "stop listening" to exit voice conversation mode</p>
         <p>• Say "clear chat" to start a fresh conversation</p>
-        <p>• Toggle "Auto-read responses" to hear all assistant responses with Cartesia TTS</p>
+        <p>• Toggle "Auto-read responses" to hear all assistant responses with TTS</p>
         <p class="security-note">• This app runs on <strong>localhost</strong> for safe testing</p>
     </div>
 
@@ -95,7 +50,7 @@
             </div>
             <div class="voice-toggle">
                 <input type="checkbox" id="voice-mode" name="voice-mode">
-                <label for="voice-mode">Auto-read responses (Cartesia)</label>
+                <label for="voice-mode">Auto-read responses</label>
             </div>
         </div>
         <div class="question-area">

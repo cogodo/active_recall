@@ -1,14 +1,10 @@
-langgraph
-langchain
-fastapi
-uvicorn
-requests
-python-multipart
-boto3
-python-dotenv # For managing environment variables
 flask==2.0.1
-Werkzeug==2.0.1
-openai>=1.12.0
-flask-socketio>=5.0.4
-websocket-client>=1.5.1
-cartesia
+python-dotenv==1.0.0
+openai==1.12.0
+requests==2.31.0
+flask-socketio==5.5.1
+eventlet==0.39.1
+python-engineio==4.12.0
+python-socketio==5.13.0
+bidict==0.23.1
+cartesia>=0.2.0

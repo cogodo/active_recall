@@ -24,7 +24,7 @@ def test_cartesia_tts(text, output_file="test_speech.mp3"):
     print(f"Converting text: '{text}'")
     
     # Call Cartesia API
-    url = "https://api.cartesia.ai/v1/tts"
+    url = "https://api.cartesia.ai/tts/bytes"
     headers = {
         "Authorization": f"Bearer {CARTESIA_API_KEY}",
         "Content-Type": "application/json",
@@ -33,12 +33,13 @@ def test_cartesia_tts(text, output_file="test_speech.mp3"):
     payload = {
         "modelId": "sonic-2",
         "transcript": text,
-        "voiceId": "nova",
+        "voice": {
+            "mode": "id",
+            "id": "nova"
+        },
         "language": "en",
         "outputFormat": {
-            "container": "mp3",
-            "sampleRate": 24000,
-            "bitRate": 128000
+            "format": "mp3"
         }
     }
     
