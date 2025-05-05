@@ -34,6 +34,11 @@
             background-color: #3367d6;
         }
 
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+
         textarea {
             width: 100%;
             padding: 10px;
@@ -49,11 +54,42 @@
             background-color: #f1f1f1;
             border-radius: 4px;
         }
+
+        .error {
+            background-color: #ffebee;
+            color: #d32f2f;
+        }
+
+        .success {
+            background-color: #e8f5e9;
+            color: #388e3c;
+        }
+
+        .warning {
+            background-color: #fff8e1;
+            color: #f57c00;
+        }
+
+        .info {
+            background-color: #e3f2fd;
+            color: #1976d2;
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 4px;
+        }
     </style>
 </head>
 
 <body>
-    <h1>TTS Testing Page</h1>
+    <h1>Text-to-Speech Testing Page</h1>
+
+    <div class="info">
+        <p><strong>What's happening:</strong> This page tests both server-based TTS (using Cartesia API) and
+            browser-based TTS (using Web Speech API). If server TTS fails, it should automatically fall back to browser
+            TTS.</p>
+        <p><strong>Troubleshooting:</strong> If the listen button in the main app isn't working, test both methods below
+            to see what's working.</p>
+    </div>
 
     <div class="container">
         <h2>Test Server TTS (Cartesia)</h2>
@@ -77,6 +113,14 @@
         <div id="browser-status" class="status">Ready</div>
     </div>
 
+    <div class="container">
+        <h2>TTS Diagnostics</h2>
+        <button id="check-browser-tts">Check Browser TTS Support</button>
+        <button id="check-server-tts">Check Server TTS (Cartesia)</button>
+        <button id="get-tts-preferences">Get TTS Preferences</button>
+        <div id="diagnostics-result" class="status">Run checks to see results</div>
+    </div>
+
     <script>
         // Server TTS elements
         const serverTextarea = document.getElementById('server-text');
@@ -90,6 +134,12 @@
         const browserTTSStopBtn = document.getElementById('browser-tts-stop-btn');
         const browserStatus = document.getElementById('browser-status');
 
+        // Diagnostics elements
+        const checkBrowserTTSBtn = document.getElementById('check-browser-tts');
+        const checkServerTTSBtn = document.getElementById('check-server-tts');
+        const getTTSPreferencesBtn = document.getElementById('get-tts-preferences');
+        const diagnosticsResult = document.getElementById('diagnostics-result');
+
         // Current audio element
         let currentAudio = null;
 
@@ -98,11 +148,12 @@
             try {
                 const text = serverTextarea.value.trim();
                 if (!text) {
-                    serverStatus.textContent = "Please enter some text";
+                    updateStatus(serverStatus, "Please enter some text", "error");
                     return;
                 }
 
-                serverStatus.textContent = "Adding to TTS queue...";
+                updateStatus(serverStatus, "Adding to TTS queue...");
+                serverTTSBtn.disabled = true;
 
                 // First cancel any ongoing TTS
                 await fetch('/text-to-speech/queue', {
@@ -126,7 +177,7 @@
                     throw new Error(error.error || 'Failed to queue TTS');
                 }
 
-                serverStatus.textContent = "Processing TTS...";
+                updateStatus(serverStatus, "Processing TTS...");
 
                 // Process the queue
                 const response = await fetch('/text-to-speech/process-queue', {
@@ -149,14 +200,15 @@
 
                     // Set up completion handling
                     audioElement.onended = () => {
-                        serverStatus.textContent = "Playback completed";
+                        updateStatus(serverStatus, "Playback completed", "success");
                         URL.revokeObjectURL(audioUrl);
                         currentAudio = null;
+                        serverTTSBtn.disabled = false;
                     };
 
                     // Play the audio
                     await audioElement.play();
-                    serverStatus.textContent = "Playing audio...";
+                    updateStatus(serverStatus, "Playing audio...");
                 } else {
                     // Handle JSON response (likely an error)
                     const data = await response.json();
@@ -164,28 +216,30 @@
                     if (!data.success) {
                         if (data.fallback_requested) {
                             // Use browser TTS as fallback
-                            serverStatus.textContent = "Server TTS not available. Using browser fallback...";
+                            updateStatus(serverStatus, "Server TTS not available. Using browser fallback...", "warning");
                             await playBrowserTTS(text);
-                            serverStatus.textContent = "Played using browser fallback";
+                            updateStatus(serverStatus, "Played using browser fallback", "warning");
                         } else {
                             throw new Error(data.error || 'Failed to process TTS');
                         }
                     } else if (data.queue_empty) {
-                        serverStatus.textContent = "TTS queue is empty";
+                        updateStatus(serverStatus, "TTS queue is empty", "warning");
                     }
+                    serverTTSBtn.disabled = false;
                 }
             } catch (error) {
                 console.error("Error with server TTS:", error);
-                serverStatus.textContent = "Error: " + error.message;
+                updateStatus(serverStatus, "Error: " + error.message, "error");
+                serverTTSBtn.disabled = false;
 
                 // Try browser fallback
                 try {
                     const text = serverTextarea.value.trim();
-                    serverStatus.textContent = "Error with server TTS. Using browser fallback...";
+                    updateStatus(serverStatus, "Error with server TTS. Using browser fallback...", "warning");
                     await playBrowserTTS(text);
-                    serverStatus.textContent = "Played using browser fallback";
+                    updateStatus(serverStatus, "Played using browser fallback", "warning");
                 } catch (fallbackError) {
-                    serverStatus.textContent = "Error: " + fallbackError.message;
+                    updateStatus(serverStatus, "Error: " + fallbackError.message, "error");
                 }
             }
         }
@@ -196,16 +250,18 @@
                 try {
                     const textToSpeak = text || browserTextarea.value.trim();
                     if (!textToSpeak) {
-                        browserStatus.textContent = "Please enter some text";
+                        updateStatus(browserStatus, "Please enter some text", "error");
                         reject(new Error("No text provided"));
                         return;
                     }
 
-                    browserStatus.textContent = "Initializing browser TTS...";
+                    browserTTSBtn.disabled = true;
+                    updateStatus(browserStatus, "Initializing browser TTS...");
 
                     // Check if browser supports speech synthesis
                     if (!window.speechSynthesis) {
-                        browserStatus.textContent = "Browser doesn't support speech synthesis";
+                        updateStatus(browserStatus, "Browser doesn't support speech synthesis", "error");
+                        browserTTSBtn.disabled = false;
                         reject(new Error("Browser doesn't support speech synthesis"));
                         return;
                     }
@@ -251,16 +307,18 @@
 
                     // Set event handlers
                     utterance.onstart = function () {
-                        browserStatus.textContent = "Playing audio...";
+                        updateStatus(browserStatus, "Playing audio...");
                     };
 
                     utterance.onend = function () {
-                        browserStatus.textContent = "Playback completed";
+                        updateStatus(browserStatus, "Playback completed", "success");
+                        browserTTSBtn.disabled = false;
                         resolve();
                     };
 
                     utterance.onerror = function (event) {
-                        browserStatus.textContent = "Error: " + (event.error || "Unknown error");
+                        updateStatus(browserStatus, "Error: " + (event.error || "Unknown error"), "error");
+                        browserTTSBtn.disabled = false;
                         reject(new Error(event.error || "Unknown TTS error"));
                     };
 
@@ -268,7 +326,8 @@
                     window.speechSynthesis.speak(utterance);
 
                 } catch (error) {
-                    browserStatus.textContent = "Error: " + error.message;
+                    updateStatus(browserStatus, "Error: " + error.message, "error");
+                    browserTTSBtn.disabled = false;
                     reject(error);
                 }
             });
@@ -283,16 +342,128 @@
                     currentAudio.pause();
                     currentAudio = null;
                 }
-                serverStatus.textContent = "Playback stopped";
+                updateStatus(serverStatus, "Playback stopped");
+                serverTTSBtn.disabled = false;
             }).catch(error => {
-                serverStatus.textContent = "Error stopping playback: " + error.message;
+                updateStatus(serverStatus, "Error stopping playback: " + error.message, "error");
             });
         }
 
         function stopBrowserTTS() {
             if (window.speechSynthesis) {
                 window.speechSynthesis.cancel();
-                browserStatus.textContent = "Playback stopped";
+                updateStatus(browserStatus, "Playback stopped");
+                browserTTSBtn.disabled = false;
+            }
+        }
+
+        // Diagnostic functions
+        async function checkBrowserTTS() {
+            try {
+                let result = "<strong>Browser TTS Check:</strong><br>";
+
+                // Check if the browser supports the Web Speech API
+                if (!'speechSynthesis' in window) {
+                    result += "❌ Web Speech API not supported in this browser<br>";
+                } else {
+                    result += "✅ Web Speech API is supported<br>";
+
+                    // Get available voices
+                    const voices = window.speechSynthesis.getVoices();
+                    if (voices.length === 0) {
+                        // Wait for voices to load
+                        await new Promise(resolve => {
+                            const voicesChanged = () => {
+                                window.speechSynthesis.removeEventListener('voiceschanged', voicesChanged);
+                                resolve();
+                            };
+                            window.speechSynthesis.addEventListener('voiceschanged', voicesChanged);
+                            // Set a timeout just in case
+                            setTimeout(resolve, 1000);
+                        });
+                    }
+
+                    const voicesNow = window.speechSynthesis.getVoices();
+                    result += `✅ ${voicesNow.length} voices available<br>`;
+
+                    // English voices
+                    const englishVoices = voicesNow.filter(voice => voice.lang.startsWith('en-'));
+                    result += `✅ ${englishVoices.length} English voices available<br>`;
+
+                    if (englishVoices.length > 0) {
+                        result += `ℹ️ First English voice: ${englishVoices[0].name} (${englishVoices[0].lang})<br>`;
+                    }
+                }
+
+                updateStatus(diagnosticsResult, result);
+            } catch (error) {
+                updateStatus(diagnosticsResult, "<strong>Browser TTS Check Error:</strong><br>" + error.message, "error");
+            }
+        }
+
+        async function checkServerTTS() {
+            try {
+                updateStatus(diagnosticsResult, "<strong>Checking Server TTS...</strong>");
+
+                // Check Cartesia configuration
+                const response = await fetch('/text-to-speech/voices');
+                const data = await response.json();
+
+                let result = "<strong>Server TTS Check:</strong><br>";
+
+                if (response.ok && data.success) {
+                    result += `✅ Cartesia API configured correctly<br>`;
+                    result += `✅ ${data.voices.length} voices available<br>`;
+
+                    // Show some voice info
+                    if (data.voices.length > 0) {
+                        const voice = data.voices[0];
+                        result += `ℹ️ First voice: ${voice.name} (${voice.id})<br>`;
+                    }
+                } else {
+                    result += `❌ Cartesia API issue: ${data.error || 'Unknown error'}<br>`;
+                    result += `ℹ️ Falling back to browser TTS is recommended<br>`;
+                }
+
+                updateStatus(diagnosticsResult, result);
+            } catch (error) {
+                updateStatus(diagnosticsResult, "<strong>Server TTS Check Error:</strong><br>" + error.message, "error");
+            }
+        }
+
+        async function getTTSPreferences() {
+            try {
+                updateStatus(diagnosticsResult, "<strong>Getting TTS Preferences...</strong>");
+
+                const response = await fetch('/text-to-speech/preferences');
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    let result = "<strong>TTS Preferences:</strong><br>";
+                    const prefs = data.preferences;
+
+                    result += `Voice ID: ${prefs.voice_id}<br>`;
+                    result += `Model ID: ${prefs.model_id}<br>`;
+                    result += `Auto Read: ${prefs.auto_read ? 'Yes' : 'No'}<br>`;
+                    result += `Server TTS: ${prefs.server_tts ? 'Enabled' : 'Disabled'}<br>`;
+                    result += `Force Browser TTS: ${prefs.force_browser_tts ? 'Yes' : 'No'}<br>`;
+
+                    updateStatus(diagnosticsResult, result);
+                } else {
+                    updateStatus(diagnosticsResult, "<strong>Error Getting Preferences:</strong><br>" +
+                        (data.error || 'Unknown error'), "error");
+                }
+            } catch (error) {
+                updateStatus(diagnosticsResult, "<strong>Preferences Error:</strong><br>" + error.message, "error");
+            }
+        }
+
+        // Helper function to update status with proper styling
+        function updateStatus(element, message, type = "info") {
+            element.innerHTML = message;
+            element.className = "status";
+            if (type) {
+                element.classList.add(type);
             }
         }
 
@@ -301,6 +472,14 @@
         serverTTSStopBtn.addEventListener('click', stopServerTTS);
         browserTTSBtn.addEventListener('click', () => playBrowserTTS());
         browserTTSStopBtn.addEventListener('click', stopBrowserTTS);
+        checkBrowserTTSBtn.addEventListener('click', checkBrowserTTS);
+        checkServerTTSBtn.addEventListener('click', checkServerTTS);
+        getTTSPreferencesBtn.addEventListener('click', getTTSPreferences);
+
+        // Run browser TTS check on load
+        document.addEventListener('DOMContentLoaded', () => {
+            setTimeout(checkBrowserTTS, 500);
+        });
     </script>
 </body>
 

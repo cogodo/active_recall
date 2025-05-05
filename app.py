@@ -1,3 +1,7 @@
+# Apply eventlet monkey patching at the very beginning
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import uuid
 import tempfile
@@ -28,7 +32,7 @@ Configuration Instructions:
 2. If the .env file already exists, add the CARTESIA_API_KEY and MISTRAL_API_KEY variables.
 
 3. Cartesia API is used for high-quality text-to-speech (TTS) capabilities.
-   If no API key is provided, the app will fall back to browser-based TTS.
+   This functionality requires a valid Cartesia API key.
    
 4. Mistral API is used for PDF processing and question generation.
    The app requires this API key for the LangGraph pipeline functionality.
@@ -48,18 +52,28 @@ MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 
 # Check and log API availability
 if not CARTESIA_API_KEY:
-    print("WARNING: Cartesia API key not found. Text-to-speech will use browser fallback.")
+    print("WARNING: Cartesia API key not found. Text-to-speech will not work.")
 else:
     print("Cartesia API key loaded successfully.")
 
+# Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
+
+# Configure secure cookies for HTTPS
+app.config['SESSION_COOKIE_SECURE'] = True  # Only send cookies over HTTPS
+app.config['SESSION_COOKIE_HTTPONLY'] = True  # Prevent JavaScript access to cookies
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'  # SameSite protection
 
 # Store chat sessions (in-memory for simplicity - would use a database in production)
 chat_sessions = {}
 
 # Initialize SocketIO with Flask app
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, 
+                   cors_allowed_origins="*", 
+                   async_mode='eventlet',
+                   logger=True,
+                   engineio_logger=True)
 
 # Authenticated socket sessions
 socket_sessions = {}
@@ -747,8 +761,6 @@ def text_to_speech():
             print("Warning: No Cartesia API key set, returning error")
             return jsonify({
                 'error': 'Cartesia API key not configured',
-                'text': text,
-                'fallback_requested': True,
                 'success': False
             }), 503
             
@@ -860,8 +872,6 @@ def stream_text_to_speech():
             print("Warning: No Cartesia API key set, returning error")
             return jsonify({
                 'error': 'Cartesia API key not configured',
-                'text': text,
-                'fallback_requested': True,
                 'success': False
             }), 503
             
@@ -978,8 +988,6 @@ def cancel_tts():
             print("Warning: No Cartesia API key set, returning error")
             return jsonify({
                 'error': 'Cartesia API key not configured',
-                'text': text,
-                'fallback_requested': True,
                 'success': False
             }), 503
             
@@ -1023,8 +1031,6 @@ def list_tts_voices():
             print("Warning: No Cartesia API key set, returning error")
             return jsonify({
                 'error': 'Cartesia API key not configured',
-                'text': text,
-                'fallback_requested': True,
                 'success': False
             }), 503
             
@@ -1085,7 +1091,9 @@ def tts_preferences():
             chat_sessions[session_id]['tts_preferences'] = {
                 'voice_id': 'nova',
                 'model_id': 'sonic-2',
-                'auto_read': False
+                'auto_read': False,
+                'server_tts': True,  # Always use server TTS
+                'force_browser_tts': False  # Never force browser TTS
             }
         
         # Handle GET request - return current preferences
@@ -1110,6 +1118,10 @@ def tts_preferences():
                 preferences['model_id'] = data['model_id']
             if 'auto_read' in data:
                 preferences['auto_read'] = bool(data['auto_read'])
+            if 'server_tts' in data:
+                preferences['server_tts'] = bool(data['server_tts'])
+            if 'force_browser_tts' in data:
+                preferences['force_browser_tts'] = bool(data['force_browser_tts'])
                 
             print(f"Updated TTS preferences for session {session_id}: {preferences}")
             
@@ -1366,41 +1378,167 @@ def process_tts_queue():
         
         # Check if Cartesia API is configured
         if not CARTESIA_API_KEY:
-            print("Warning: Cartesia API key not set, returning text for browser TTS")
-            # Return the text for browser-based TTS
+            print("Warning: Cartesia API key not set, returning error")
+            # Return an error without the text
             return jsonify({
                 'error': 'Cartesia API key not configured',
-                'text': next_request['text'],
-                'fallback_requested': True,
                 'success': False
             }), 503
         
-        # Process the request by redirecting to the appropriate endpoint
+        # Instead of using redirect, directly call the appropriate function
         if next_request['is_streaming']:
-            # For streaming, redirect to the streaming endpoint
-            return redirect(url_for('stream_text_to_speech'), 
-                           code=307,  # 307 preserves the POST method
-                           Response=Response(
-                               json.dumps({
-                                   'text': next_request['text'], 
-                                   'voice': next_request['voice_id'],
-                                   'model': next_request['model_id'],
-                                   'context_id': next_request['context_id']
-                               }), 
-                               mimetype='application/json')
-                           )
+            # For streaming, call the stream function directly
+            text = next_request['text']
+            voice_id = next_request['voice_id']
+            model_id = next_request['model_id']
+            
+            print(f"Streaming speech for: '{text[:50]}...' (truncated)")
+            print(f"Using voice: {voice_id}")
+            print(f"Using model: {model_id}")
+            
+            # Create properly formatted voice parameter
+            voice_param = voice_id
+            if isinstance(voice_id, str):
+                voice_param = {
+                    "mode": "id",
+                    "id": voice_id
+                }
+            
+            # Initialize Cartesia SDK client
+            import cartesia
+            client = cartesia.Cartesia(api_key=CARTESIA_API_KEY)
+            
+            def generate_audio_chunks():
+                """Generator function to yield audio chunks as they become available"""
+                try:
+                    # Use context ID to maintain voice consistency across chunks
+                    context_id = next_request.get('context_id', f"ctx_{int(time.time())}_{uuid.uuid4().hex[:8]}")
+                    print(f"Using context ID: {context_id}")
+                    
+                    # Split text into sentences for better streaming
+                    sentences = re.split(r'(?<=[.!?])\s+', text)
+                    print(f"Split text into {len(sentences)} sentences")
+                    
+                    # Process first sentence to start the stream
+                    first_sentence = sentences[0]
+                    
+                    print(f"Starting stream with first sentence: '{first_sentence}'")
+                    # Create websocket client from SDK
+                    ws_client = client.tts.websocket()
+                    
+                    # Connect to the websocket
+                    yield b'--frame\r\n'
+                    yield b'Content-Type: audio/mpeg\r\n\r\n'
+                    
+                    # Process each sentence
+                    for i, sentence in enumerate(sentences):
+                        is_continuation = i > 0
+                        
+                        if is_continuation:
+                            print(f"Continuing with sentence {i+1}/{len(sentences)}")
+                            # Use getattr to avoid conflict with Python's 'continue' keyword
+                            continue_method = getattr(ws_client, "continue")
+                            audio_chunks = continue_method({
+                                "contextId": context_id,
+                                "transcript": sentence
+                            })
+                        else:
+                            print(f"Starting with sentence {i+1}/{len(sentences)}")
+                            audio_chunks = ws_client.send({
+                                "contextId": context_id, 
+                                "modelId": model_id,
+                                "voice": voice_param,
+                                "transcript": sentence,
+                                "language": "en"
+                            })
+                        
+                        # Stream chunks as they arrive
+                        for chunk in audio_chunks:
+                            if chunk.type == "chunk":
+                                if hasattr(chunk, 'chunk') and chunk.chunk:
+                                    yield chunk.chunk + b'\r\n'
+                                    yield b'--frame\r\n'
+                                    yield b'Content-Type: audio/mpeg\r\n\r\n'
+                        
+                        # Small pause between sentences for natural cadence
+                        time.sleep(0.1)
+                    
+                except Exception as e:
+                    print(f"Error in streaming TTS: {str(e)}")
+                    yield f"Error: {str(e)}".encode() + b'\r\n'
+                    yield b'--frame\r\n'
+            
+            return Response(
+                generate_audio_chunks(),
+                mimetype='multipart/x-mixed-replace; boundary=frame',
+                headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Cache-Control': 'no-cache, no-store, must-revalidate',
+                    'Pragma': 'no-cache',
+                    'Expires': '0'
+                }
+            )
+            
         else:
-            # For short text, use non-streaming endpoint
-            return redirect(url_for('text_to_speech'), 
-                           code=307,  # 307 preserves the POST method
-                           Response=Response(
-                               json.dumps({
-                                   'text': next_request['text'], 
-                                   'voice': next_request['voice_id'],
-                                   'model': next_request['model_id']
-                               }), 
-                               mimetype='application/json')
-                           )
+            # For short text, directly call the text_to_speech function
+            text = next_request['text']
+            voice_id = next_request['voice_id']
+            model_id = next_request['model_id']
+            
+            print(f"Converting to speech: '{text[:50]}...' (truncated)")
+            print(f"Using voice: {voice_id}")
+            print(f"Using model: {model_id}")
+            
+            # Create properly formatted voice parameter
+            voice_param = voice_id
+            if isinstance(voice_id, str):
+                voice_param = {
+                    "mode": "id",
+                    "id": voice_id
+                }
+            
+            # Initialize Cartesia SDK client
+            import cartesia
+            client = cartesia.Cartesia(api_key=CARTESIA_API_KEY)
+            
+            try:
+                # Generate audio using the Cartesia Python SDK
+                print(f"Generating audio with Cartesia SDK...")
+                print(f"  - transcript: {text[:50]}...")
+                print(f"  - model_id: {model_id}")
+                print(f"  - voice: {voice_param}")
+                
+                audio_generator = client.tts.bytes(
+                    transcript=text,
+                    model_id=model_id,
+                    voice=voice_param,
+                    language="en"
+                )
+                
+                # Combine all chunks into a single audio output
+                audio_data = b"".join(list(audio_generator))
+                
+                print(f"Successfully generated audio, size: {len(audio_data)} bytes")
+                
+                # Create a Flask response with the audio data
+                flask_response = Response(
+                    audio_data,
+                    mimetype="audio/mpeg",
+                    headers={
+                        "Content-Disposition": "attachment; filename=speech.mp3",
+                        'Access-Control-Allow-Origin': '*'
+                    }
+                )
+                
+                return flask_response
+                
+            except Exception as e:
+                error_msg = f"Cartesia SDK error: {str(e)}"
+                print(error_msg)
+                return jsonify({
+                    'error': error_msg,
+                    'success': False
+                }), 500
             
     except Exception as e:
         error_msg = f"Error in process_tts_queue: {str(e)}"
@@ -2322,7 +2460,7 @@ if __name__ == '__main__':
         
     # Check if Cartesia API key is set
     if not CARTESIA_API_KEY:
-        print("WARNING: Cartesia API key is not set. Text-to-speech will use browser fallback method.")
+        print("WARNING: Cartesia API key is not set. Text-to-speech will not work.")
     else:
         print(f"Cartesia API key loaded successfully (first 5 chars): {CARTESIA_API_KEY[:5]}...")
     
@@ -2331,20 +2469,25 @@ if __name__ == '__main__':
     key_file = 'localhost+1-key.pem'
     ssl_files_exist = os.path.exists(cert_file) and os.path.exists(key_file)
     
-    if not ssl_files_exist:
-        print(f"WARNING: SSL certificate files not found ({cert_file} and/or {key_file}).")
-        print("Running without SSL. This may cause issues with microphone access.")
-        socketio.run(app, debug=True, host='localhost', port=5001)
-    else:
-        print(f"SSL certificate files found. Running with HTTPS enabled.")
-        # Create SSL context for Flask instead of passing directly to eventlet
-        try:
-            import ssl
-            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
-            # Use socketio.run without SSL - we'll apply SSL at the Flask level
-            socketio.run(app, debug=True, host='localhost', port=5001)
-        except Exception as e:
-            print(f"Error setting up SSL: {str(e)}")
-            print("Falling back to non-SSL mode")
-            socketio.run(app, debug=True, host='localhost', port=5001) 
+    # Run with or without SSL
+    try:
+        if ssl_files_exist:
+            print(f"SSL certificate files found. Running with HTTPS enabled.")
+            print(f"Using cert: {cert_file}, key: {key_file}")
+            # Use Flask-SocketIO's built-in SSL support
+            socketio.run(app, 
+                       debug=True, 
+                       host='127.0.0.1', 
+                       port=5001,
+                       keyfile=key_file,
+                       certfile=cert_file,
+                       allow_unsafe_werkzeug=True)
+        else:
+            print(f"WARNING: SSL certificate files not found ({cert_file} and/or {key_file}).")
+            print("Running without SSL. This may cause issues with microphone access.")
+            socketio.run(app, debug=True, host='127.0.0.1', port=5001, 
+                      allow_unsafe_werkzeug=True)
+    except Exception as e:
+        print(f"Error starting server: {e}")
+        print("Falling back to basic Flask server without SocketIO")
+        app.run(debug=True, host='127.0.0.1', port=5001)

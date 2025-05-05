@@ -180,12 +180,18 @@ function initApp() {
 
             // Create socket connection
             console.log("Initializing WebSocket connection");
-            socket = io(window.location.origin, {
+            const isSecure = window.location.protocol === 'https:';
+            const socketProtocol = isSecure ? 'wss://' : 'ws://';
+            const socketUrl = socketProtocol + window.location.host;
+            console.log(`Using WebSocket URL: ${socketUrl}`);
+
+            socket = io(socketUrl, {
                 transports: ['websocket'],
                 autoConnect: true,
                 reconnection: true,
                 reconnectionAttempts: 5,
-                reconnectionDelay: 1000
+                reconnectionDelay: 1000,
+                secure: isSecure
             });
 
             // Set up event handlers
@@ -196,6 +202,18 @@ function initApp() {
             socket.on('ui_state_update', handleUIStateUpdate);
             socket.on('tts_status_update', handleTTSStatusUpdate);
             socket.on('question_state_update', handleQuestionStateUpdate);
+            socket.on('connect_error', (error) => {
+                console.error("WebSocket connection error:", error);
+                showError("Connection error. Falling back to polling.");
+                // Immediately start polling for UI state as a fallback
+                startUIStateRefresh();
+            });
+            socket.on('error', (error) => {
+                console.error("WebSocket error:", error);
+                showError("WebSocket error. Falling back to polling.");
+                // Immediately start polling for UI state as a fallback
+                startUIStateRefresh();
+            });
 
             console.log("WebSocket event handlers registered");
         } catch (error) {
@@ -1168,7 +1186,9 @@ function initApp() {
         listenButton.addEventListener('click', function () {
             if (isPlaying) {
                 // If already playing, cancel it
-                cancelOngoingTts();
+                if (window.speechSynthesis) {
+                    window.speechSynthesis.cancel();
+                }
                 this.innerHTML = '🔊 Listen';
                 this.classList.remove('playing');
                 isPlaying = false;
@@ -1178,18 +1198,63 @@ function initApp() {
                 this.classList.add('playing');
                 isPlaying = true;
 
-                // Play the text and handle completion
-                speakText(text).then(() => {
-                    // Reset button when done
-                    this.innerHTML = '🔊 Listen';
-                    this.classList.remove('playing');
-                    isPlaying = false;
-                }).catch(() => {
-                    // Also reset on error
-                    this.innerHTML = '🔊 Listen';
-                    this.classList.remove('playing');
-                    isPlaying = false;
-                });
+                // Use browser TTS directly for more reliable playback
+                if (window.speechSynthesis) {
+                    const utterance = new SpeechSynthesisUtterance(text);
+
+                    // Set utterance properties
+                    utterance.rate = 1.0;
+                    utterance.pitch = 1.0;
+                    utterance.volume = 1.0;
+
+                    // Get available voices - prefer female English voice if available
+                    const voices = window.speechSynthesis.getVoices();
+                    if (voices.length > 0) {
+                        // Try to find a female English voice
+                        const femaleEnglishVoices = voices.filter(voice =>
+                            voice.lang.startsWith('en') && voice.name.includes('Female'));
+
+                        if (femaleEnglishVoices.length > 0) {
+                            utterance.voice = femaleEnglishVoices[0];
+                        } else {
+                            // Use any English voice
+                            const englishVoices = voices.filter(voice => voice.lang.startsWith('en'));
+                            if (englishVoices.length > 0) {
+                                utterance.voice = englishVoices[0];
+                            }
+                        }
+                    }
+
+                    // Handle completion
+                    utterance.onend = () => {
+                        this.innerHTML = '🔊 Listen';
+                        this.classList.remove('playing');
+                        isPlaying = false;
+                    };
+
+                    // Handle errors
+                    utterance.onerror = () => {
+                        this.innerHTML = '🔊 Listen';
+                        this.classList.remove('playing');
+                        isPlaying = false;
+                        showError("Text-to-speech failed");
+                    };
+
+                    // Start speaking
+                    window.speechSynthesis.speak(utterance);
+                } else {
+                    // Try server TTS as fallback
+                    speakText(text).then(() => {
+                        this.innerHTML = '🔊 Listen';
+                        this.classList.remove('playing');
+                        isPlaying = false;
+                    }).catch(() => {
+                        this.innerHTML = '🔊 Listen';
+                        this.classList.remove('playing');
+                        isPlaying = false;
+                        showError("Text-to-speech not available");
+                    });
+                }
             }
         });
 
@@ -1298,6 +1363,7 @@ function initApp() {
     async function speakText(text) {
         return new Promise(async (resolve, reject) => {
             try {
+                // No fallback now - only use server TTS
                 console.log("Adding to TTS queue:", text.substring(0, 50) + "...");
 
                 // Cancel any ongoing TTS first
@@ -1328,33 +1394,13 @@ function initApp() {
                 console.log(`Added to TTS queue, position: ${data.queue_position + 1}/${data.queue_length}`);
 
                 // Process the queue
-                try {
-                    await processQueue();
-                    resolve(); // TTS completed successfully
-                } catch (error) {
-                    reject(error);
-                }
+                await processQueue();
+                resolve(); // TTS completed successfully
 
             } catch (error) {
                 console.error("Error in speakText:", error);
-
-                // Check for Cartesia API configuration error
-                if (error.message && (
-                    error.message.includes('Cartesia API key not configured') ||
-                    error.message.includes('Server error: 503')
-                )) {
-                    console.log("Using browser-based TTS as fallback");
-                    try {
-                        await useBrowserTTS(text);
-                        resolve(); // Browser TTS completed
-                    } catch (browserError) {
-                        reject(browserError);
-                    }
-                } else {
-                    // Only show error for non-configuration issues
-                    showError(`TTS error: ${error.message}`);
-                    reject(error);
-                }
+                showError("TTS failed: " + error.message);
+                reject(error);
             }
         });
     }
@@ -1403,22 +1449,7 @@ function initApp() {
                         await audioElement.play();
                     } catch (playError) {
                         console.error("Error playing audio:", playError);
-                        // Try browser TTS as fallback for playback errors
-                        if (response.ok) {
-                            try {
-                                const jsonResponse = await response.json();
-                                if (jsonResponse.error && jsonResponse.error.includes('Cartesia API key not configured')) {
-                                    await useBrowserTTS(jsonResponse.text || "Sorry, I couldn't process the text-to-speech request.");
-                                    resolve();
-                                } else {
-                                    reject(playError);
-                                }
-                            } catch (e) {
-                                reject(playError);
-                            }
-                        } else {
-                            reject(playError);
-                        }
+                        reject(playError);
                     }
 
                 } else {
@@ -1426,22 +1457,7 @@ function initApp() {
                     const data = await response.json();
 
                     if (!data.success) {
-                        // Check for Cartesia API configuration error
-                        if (data.error && data.error.includes('Cartesia API key not configured')) {
-                            console.log("Cartesia API not configured, falling back to browser TTS");
-                            if (data.text) {
-                                try {
-                                    await useBrowserTTS(data.text);
-                                    resolve();
-                                } catch (e) {
-                                    reject(e);
-                                }
-                            } else {
-                                reject(new Error("No text provided for fallback TTS"));
-                            }
-                        } else {
-                            reject(new Error(data.error || 'Failed to process TTS queue'));
-                        }
+                        reject(new Error(data.error || 'Failed to process TTS queue'));
                     } else if (data.queue_empty) {
                         console.log("TTS queue is empty");
                         resolve(); // Resolve for empty queue
@@ -1454,92 +1470,6 @@ function initApp() {
                 console.error("Error processing TTS queue:", error);
                 reject(error);
             }
-        });
-    }
-
-    // Browser-based TTS fallback
-    function useBrowserTTS(text) {
-        return new Promise((resolve, reject) => {
-            // Check if browser supports speech synthesis
-            if (!window.speechSynthesis) {
-                console.error("Browser doesn't support speech synthesis");
-                showError("Your browser doesn't support text-to-speech");
-                reject(new Error("Browser doesn't support speech synthesis"));
-                return;
-            }
-
-            // Cancel any ongoing speech
-            window.speechSynthesis.cancel();
-
-            // Create utterance
-            const utterance = new SpeechSynthesisUtterance(text);
-
-            // Set properties
-            utterance.rate = 1.0;  // Normal speed
-            utterance.pitch = 1.0; // Normal pitch
-            utterance.volume = 1.0; // Full volume
-
-            // Use a female voice if available
-            let voices = window.speechSynthesis.getVoices();
-            if (voices.length === 0) {
-                // Voice list might not be loaded yet, wait and try again
-                window.speechSynthesis.onvoiceschanged = function () {
-                    voices = window.speechSynthesis.getVoices();
-                    setVoice();
-                };
-            } else {
-                setVoice();
-            }
-
-            function setVoice() {
-                // Find a good English voice, preferably female
-                const preferredVoices = voices.filter(voice =>
-                    voice.lang.startsWith('en-') && voice.name.includes('Female'));
-
-                if (preferredVoices.length > 0) {
-                    utterance.voice = preferredVoices[0];
-                } else {
-                    // Fallback to any English voice
-                    const englishVoices = voices.filter(voice => voice.lang.startsWith('en-'));
-                    if (englishVoices.length > 0) {
-                        utterance.voice = englishVoices[0];
-                    }
-                }
-            }
-
-            // Set event handlers for speaking status
-            utterance.onstart = function () {
-                console.log("Browser TTS started");
-                // Show speaking indicator
-                let speakingIndicator = document.getElementById('speaking-indicator');
-                if (!speakingIndicator) {
-                    speakingIndicator = document.createElement('div');
-                    speakingIndicator.id = 'speaking-indicator';
-                    speakingIndicator.className = 'speaking-indicator';
-                    speakingIndicator.textContent = 'Assistant is speaking...';
-                    document.body.appendChild(speakingIndicator);
-                }
-                speakingIndicator.style.display = 'block';
-            };
-
-            utterance.onend = function () {
-                console.log("Browser TTS ended");
-                // Hide speaking indicator
-                const speakingIndicator = document.getElementById('speaking-indicator');
-                if (speakingIndicator) {
-                    speakingIndicator.style.display = 'none';
-                }
-                resolve(); // Resolve the promise when speech is complete
-            };
-
-            utterance.onerror = function (event) {
-                console.error("Browser TTS error:", event);
-                showError("TTS error: " + (event.error || "Unknown error"));
-                reject(new Error(event.error || "Unknown TTS error"));
-            };
-
-            // Start speaking
-            window.speechSynthesis.speak(utterance);
         });
     }
 
@@ -1749,4 +1679,4 @@ function initApp() {
 
         return patterns.some(pattern => pattern.test(message));
     }
-} 
+}; 
