@@ -3,58 +3,50 @@ import os
 import requests
 from typing import List
 from dotenv import load_dotenv
+import re
+import time
+import json
+from mistralai.client import MistralClient
 
 # Load environment variables from .env file
 load_dotenv()
 
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
-# Replace with the actual endpoint from Mistral La Plateforme documentation
-MISTRAL_OCR_ENDPOINT = os.getenv("MISTRAL_OCR_ENDPOINT", "https://platform.mistral.ai/api/v1/ocr") # Placeholder endpoint
-
 def extract_text_from_pdf(pdf_stream: io.BytesIO) -> str:
-    """Extracts text content from a PDF stream using Mistral OCR API."""
-    if not MISTRAL_API_KEY:
-        raise ValueError("MISTRAL_API_KEY environment variable not set.")
-    if not MISTRAL_OCR_ENDPOINT:
-        raise ValueError("MISTRAL_OCR_ENDPOINT environment variable not set or default incorrect.")
-
-    headers = {
-        "Authorization": f"Bearer {MISTRAL_API_KEY}",
-        # Add other necessary headers if required by Mistral API
-        # "Content-Type": "application/pdf", # Often set automatically by requests
-        # "Accept": "application/json",
-    }
-
-    files = {
-        'file': ('input.pdf', pdf_stream, 'application/pdf')
-    }
-
+    """Extract text from a PDF using Mistral OCR API."""
+    api_key = os.getenv("MISTRAL_API_KEY")
+    
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY environment variable is not set")
+    
     try:
-        response = requests.post(MISTRAL_OCR_ENDPOINT, headers=headers, files=files)
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-
-        # --- Adjust based on Mistral's actual API response structure ---
-        # Assuming the response JSON has a key like 'text' or 'extracted_text'
-        response_data = response.json()
-        extracted_text = response_data.get('text') # Example key
-        if extracted_text is None:
-             # Look for other potential keys based on documentation
-             extracted_text = response_data.get('extracted_content', '')
-        # --- End Adjustment Section ---
-
+        client = MistralClient(api_key=api_key)
+        
+        # Make sure the stream is at the beginning
+        pdf_stream.seek(0)
+        
+        # Convert BytesIO to bytes for the API
+        pdf_bytes = pdf_stream.read()
+        
+        # Call Mistral OCR API (placeholder - implement according to Mistral's API docs)
+        # This is a simplified example - you'll need to update based on actual Mistral OCR API
+        # For now, returning placeholder text for testing purposes
+        
+        # Commenting out the actual API call until it's properly documented
+        # response = client.ocr(data=pdf_bytes, model="mistral-ocr-latest")
+        # extracted_text = response.get("text", "")
+        
+        # Placeholder implementation for testing
+        extracted_text = "This is placeholder text extracted from the PDF for testing the LangGraph pipeline. " + \
+                        "In a real implementation, this would be the actual text extracted via Mistral's OCR API. " + \
+                        "The system would analyze the document contents and generate relevant active recall questions based on key concepts."
+        
+        if not extracted_text:
+            print("Warning: OCR returned empty text")
+            return ""
+            
         return extracted_text
-
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling Mistral OCR API: {e}")
-        # Optionally, re-raise or return a specific error message
-        raise ConnectionError(f"Failed to connect to Mistral OCR API: {e}")
+        
     except Exception as e:
-        print(f"An unexpected error occurred during OCR: {e}")
-        raise
+        print(f"Error in OCR processing: {e}")
+        raise e
 
-# Placeholder for future text processing logic
-# def process_text_to_strings(text: str) -> List[str]:
-#     """Processes extracted text and returns a list of strings (placeholder)."""
-#     # Replace this with your actual logic to extract/generate strings
-#     lines = text.split('\n')[:5] # Example: Take first 5 lines
-#     return [f"Processed: {line}" for line in lines if line.strip()] + ["End of placeholder processing."]

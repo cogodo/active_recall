@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TTS Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .container {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            background-color: #3367d6;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border: 1px solid #ddd;
+            min-height: 100px;
+        }
+
+        .status {
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f1f1f1;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>TTS Testing Page</h1>
+
+    <div class="container">
+        <h2>Test Server TTS (Cartesia)</h2>
+        <textarea id="server-text"
+            placeholder="Enter text to convert to speech via server...">Hello, this is a test of the server-based text to speech system.</textarea>
+        <div>
+            <button id="server-tts-btn">Play Server TTS</button>
+            <button id="server-tts-stop-btn">Stop</button>
+        </div>
+        <div id="server-status" class="status">Ready</div>
+    </div>
+
+    <div class="container">
+        <h2>Test Browser TTS (Web Speech API)</h2>
+        <textarea id="browser-text"
+            placeholder="Enter text to convert to speech via browser...">Hello, this is a test of the browser-based text to speech system.</textarea>
+        <div>
+            <button id="browser-tts-btn">Play Browser TTS</button>
+            <button id="browser-tts-stop-btn">Stop</button>
+        </div>
+        <div id="browser-status" class="status">Ready</div>
+    </div>
+
+    <script>
+        // Server TTS elements
+        const serverTextarea = document.getElementById('server-text');
+        const serverTTSBtn = document.getElementById('server-tts-btn');
+        const serverTTSStopBtn = document.getElementById('server-tts-stop-btn');
+        const serverStatus = document.getElementById('server-status');
+
+        // Browser TTS elements
+        const browserTextarea = document.getElementById('browser-text');
+        const browserTTSBtn = document.getElementById('browser-tts-btn');
+        const browserTTSStopBtn = document.getElementById('browser-tts-stop-btn');
+        const browserStatus = document.getElementById('browser-status');
+
+        // Current audio element
+        let currentAudio = null;
+
+        // Server TTS function
+        async function playServerTTS() {
+            try {
+                const text = serverTextarea.value.trim();
+                if (!text) {
+                    serverStatus.textContent = "Please enter some text";
+                    return;
+                }
+
+                serverStatus.textContent = "Adding to TTS queue...";
+
+                // First cancel any ongoing TTS
+                await fetch('/text-to-speech/queue', {
+                    method: 'DELETE'
+                });
+
+                // Add to TTS queue
+                const queueResponse = await fetch('/text-to-speech/queue', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        text: text,
+                        priority: 'normal'
+                    })
+                });
+
+                if (!queueResponse.ok) {
+                    const error = await queueResponse.json();
+                    throw new Error(error.error || 'Failed to queue TTS');
+                }
+
+                serverStatus.textContent = "Processing TTS...";
+
+                // Process the queue
+                const response = await fetch('/text-to-speech/process-queue', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+
+                const contentType = response.headers.get('content-type');
+
+                if (contentType && contentType.includes('audio')) {
+                    // Handle audio response
+                    const audioBlob = await response.blob();
+                    const audioUrl = URL.createObjectURL(audioBlob);
+
+                    // Create and play audio element
+                    const audioElement = new Audio(audioUrl);
+                    currentAudio = audioElement;
+
+                    // Set up completion handling
+                    audioElement.onended = () => {
+                        serverStatus.textContent = "Playback completed";
+                        URL.revokeObjectURL(audioUrl);
+                        currentAudio = null;
+                    };
+
+                    // Play the audio
+                    await audioElement.play();
+                    serverStatus.textContent = "Playing audio...";
+                } else {
+                    // Handle JSON response (likely an error)
+                    const data = await response.json();
+
+                    if (!data.success) {
+                        if (data.fallback_requested) {
+                            // Use browser TTS as fallback
+                            serverStatus.textContent = "Server TTS not available. Using browser fallback...";
+                            await playBrowserTTS(text);
+                            serverStatus.textContent = "Played using browser fallback";
+                        } else {
+                            throw new Error(data.error || 'Failed to process TTS');
+                        }
+                    } else if (data.queue_empty) {
+                        serverStatus.textContent = "TTS queue is empty";
+                    }
+                }
+            } catch (error) {
+                console.error("Error with server TTS:", error);
+                serverStatus.textContent = "Error: " + error.message;
+
+                // Try browser fallback
+                try {
+                    const text = serverTextarea.value.trim();
+                    serverStatus.textContent = "Error with server TTS. Using browser fallback...";
+                    await playBrowserTTS(text);
+                    serverStatus.textContent = "Played using browser fallback";
+                } catch (fallbackError) {
+                    serverStatus.textContent = "Error: " + fallbackError.message;
+                }
+            }
+        }
+
+        // Browser TTS function
+        async function playBrowserTTS(text) {
+            return new Promise((resolve, reject) => {
+                try {
+                    const textToSpeak = text || browserTextarea.value.trim();
+                    if (!textToSpeak) {
+                        browserStatus.textContent = "Please enter some text";
+                        reject(new Error("No text provided"));
+                        return;
+                    }
+
+                    browserStatus.textContent = "Initializing browser TTS...";
+
+                    // Check if browser supports speech synthesis
+                    if (!window.speechSynthesis) {
+                        browserStatus.textContent = "Browser doesn't support speech synthesis";
+                        reject(new Error("Browser doesn't support speech synthesis"));
+                        return;
+                    }
+
+                    // Cancel any ongoing speech
+                    window.speechSynthesis.cancel();
+
+                    // Create utterance
+                    const utterance = new SpeechSynthesisUtterance(textToSpeak);
+
+                    // Set properties
+                    utterance.rate = 1.0;  // Normal speed
+                    utterance.pitch = 1.0; // Normal pitch
+                    utterance.volume = 1.0; // Full volume
+
+                    // Get available voices
+                    let voices = window.speechSynthesis.getVoices();
+                    if (voices.length === 0) {
+                        // Voice list might not be loaded yet, wait and try again
+                        window.speechSynthesis.onvoiceschanged = function () {
+                            voices = window.speechSynthesis.getVoices();
+                            setVoice(voices);
+                        };
+                    } else {
+                        setVoice(voices);
+                    }
+
+                    function setVoice(voices) {
+                        // Find a good English voice, preferably female
+                        const preferredVoices = voices.filter(voice =>
+                            voice.lang.startsWith('en-') && voice.name.includes('Female'));
+
+                        if (preferredVoices.length > 0) {
+                            utterance.voice = preferredVoices[0];
+                        } else {
+                            // Fallback to any English voice
+                            const englishVoices = voices.filter(voice => voice.lang.startsWith('en-'));
+                            if (englishVoices.length > 0) {
+                                utterance.voice = englishVoices[0];
+                            }
+                        }
+                    }
+
+                    // Set event handlers
+                    utterance.onstart = function () {
+                        browserStatus.textContent = "Playing audio...";
+                    };
+
+                    utterance.onend = function () {
+                        browserStatus.textContent = "Playback completed";
+                        resolve();
+                    };
+
+                    utterance.onerror = function (event) {
+                        browserStatus.textContent = "Error: " + (event.error || "Unknown error");
+                        reject(new Error(event.error || "Unknown TTS error"));
+                    };
+
+                    // Start speaking
+                    window.speechSynthesis.speak(utterance);
+
+                } catch (error) {
+                    browserStatus.textContent = "Error: " + error.message;
+                    reject(error);
+                }
+            });
+        }
+
+        // Stop TTS functions
+        function stopServerTTS() {
+            fetch('/text-to-speech/queue', {
+                method: 'DELETE'
+            }).then(() => {
+                if (currentAudio) {
+                    currentAudio.pause();
+                    currentAudio = null;
+                }
+                serverStatus.textContent = "Playback stopped";
+            }).catch(error => {
+                serverStatus.textContent = "Error stopping playback: " + error.message;
+            });
+        }
+
+        function stopBrowserTTS() {
+            if (window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+                browserStatus.textContent = "Playback stopped";
+            }
+        }
+
+        // Event listeners
+        serverTTSBtn.addEventListener('click', playServerTTS);
+        serverTTSStopBtn.addEventListener('click', stopServerTTS);
+        browserTTSBtn.addEventListener('click', () => playBrowserTTS());
+        browserTTSStopBtn.addEventListener('click', stopBrowserTTS);
+    </script>
+</body>
+
+</html>

@@ -10,6 +10,12 @@ import time
 import json
 from flask_socketio import SocketIO, emit, disconnect
 import functools
+import io
+from werkzeug.utils import secure_filename
+
+# Import LangGraph components
+from graph import app as langgraph_app
+from nodes import GraphState
 
 """
 Configuration Instructions:
@@ -17,13 +23,17 @@ Configuration Instructions:
 1. Create or modify a .env file in the root directory with the following variables:
    OPENAI_API_KEY="your_openai_api_key"
    CARTESIA_API_KEY="your_cartesia_api_key"
+   MISTRAL_API_KEY="your_mistral_api_key"
 
-2. If the .env file already exists, add the CARTESIA_API_KEY variable.
+2. If the .env file already exists, add the CARTESIA_API_KEY and MISTRAL_API_KEY variables.
 
 3. Cartesia API is used for high-quality text-to-speech (TTS) capabilities.
    If no API key is provided, the app will fall back to browser-based TTS.
+   
+4. Mistral API is used for PDF processing and question generation.
+   The app requires this API key for the LangGraph pipeline functionality.
 
-4. Restart the application after updating the .env file.
+5. Restart the application after updating the .env file.
 """
 
 # Load environment variables from .env file
@@ -33,6 +43,8 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 # Initialize Cartesia API key
 CARTESIA_API_KEY = os.getenv("CARTESIA_API_KEY", "")
+# Initialize Mistral API key
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "")
 
 # Check and log API availability
 if not CARTESIA_API_KEY:
@@ -60,6 +72,13 @@ def authenticated_only(f):
             return False
         return f(*args, **kwargs)
     return wrapped
+
+# Define allowed file extensions and max file size
+ALLOWED_EXTENSIONS = {'pdf'}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 @socketio.on('connect')
 def handle_connect():
@@ -152,21 +171,6 @@ def handle_ui_state_request():
     ui_state = chat_sessions[session_id].get('ui_state', {})
     emit('ui_state_update', ui_state)
 
-@socketio.on('tts_status_request')
-@authenticated_only
-def handle_tts_status_request():
-    """Send current TTS status to client"""
-    session_id = socket_sessions[request.sid]['session_id']
-    
-    tts_queue = chat_sessions[session_id].get('tts_queue', [])
-    active_tts = chat_sessions[session_id].get('active_tts')
-    
-    emit('tts_status_update', {
-        'queue_length': len(tts_queue),
-        'is_playing': active_tts is not None,
-        'active': active_tts
-    })
-
 @socketio.on('question_state_request')
 @authenticated_only
 def handle_question_state_request():
@@ -185,6 +189,21 @@ def handle_question_state_request():
         'total_questions': len(questions)
     })
 
+@socketio.on('tts_status_request')
+@authenticated_only
+def handle_tts_status_request():
+    """Send current TTS status to client"""
+    session_id = socket_sessions[request.sid]['session_id']
+    
+    tts_queue = chat_sessions[session_id].get('tts_queue', [])
+    active_tts = chat_sessions[session_id].get('active_tts')
+    
+    emit('tts_status_update', {
+        'queue_length': len(tts_queue),
+        'is_playing': active_tts is not None,
+        'active': active_tts
+    })
+
 @app.route('/')
 def index():
     # Generate a unique session ID if not present
@@ -197,6 +216,128 @@ def index():
             'generated_questions': []
         }
     return render_template('index.html')
+
+@app.route('/upload-pdf', methods=['POST'])
+def upload_pdf():
+    """Handle PDF upload and process it through the LangGraph pipeline"""
+    if 'session_id' not in session:
+        session['session_id'] = str(uuid.uuid4())
+        
+    session_id = session.get('session_id')
+    
+    # Check if file is in request
+    if 'pdf_file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+        
+    file = request.files['pdf_file']
+    
+    # Check if file was selected
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+        
+    # Check file type
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'Invalid file type. Only PDF files are allowed.'}), 400
+    
+    # Check file size
+    if request.content_length > MAX_FILE_SIZE:
+        return jsonify({'error': f'File size exceeds limit of {MAX_FILE_SIZE/1024/1024}MB'}), 400
+    
+    try:
+        # Get the file content as BytesIO
+        pdf_stream = io.BytesIO(file.read())
+        
+        # Initialize session if needed
+        if session_id not in chat_sessions:
+            chat_sessions[session_id] = {
+                'messages': [],
+                'current_topic': None,
+                'generated_questions': []
+            }
+            
+        # Update UI state to show processing
+        chat_sessions[session_id]['ui_state'] = {
+            'is_processing_pdf': True,
+            'pdf_filename': secure_filename(file.filename)
+        }
+        
+        # Use LangGraph to process the PDF
+        input_state = GraphState(pdf_stream=pdf_stream)
+        result = langgraph_app.invoke(input_state)
+        
+        # Check for errors in the result
+        if result.get('error'):
+            chat_sessions[session_id]['ui_state'] = {
+                'is_processing_pdf': False,
+                'pdf_error': result['error']
+            }
+            return jsonify({'error': result['error']}), 500
+            
+        # Extract generated questions from result
+        generated_questions = result.get('generated_questions', [])
+        if not generated_questions:
+            chat_sessions[session_id]['ui_state'] = {
+                'is_processing_pdf': False,
+                'pdf_error': 'No questions could be generated from this PDF'
+            }
+            return jsonify({'error': 'No questions could be generated'}), 500
+        
+        # Set topic from filename
+        filename_without_ext = os.path.splitext(secure_filename(file.filename))[0]
+        topic = f"PDF: {filename_without_ext}"
+        
+        # Update session with questions and topic
+        chat_sessions[session_id]['current_topic'] = topic
+        chat_sessions[session_id]['generated_questions'] = generated_questions
+        chat_sessions[session_id]['question_state'] = {
+            'current_index': 0,
+            'total': len(generated_questions),
+            'source': 'pdf'
+        }
+        
+        # Update UI state to show completion
+        chat_sessions[session_id]['ui_state'] = {
+            'is_processing_pdf': False,
+            'pdf_processed': True,
+            'pdf_filename': secure_filename(file.filename)
+        }
+        
+        # Emit socket event if socket is connected
+        if session_id in socket_sessions:
+            socketio.emit('ui_state_update', chat_sessions[session_id]['ui_state'], room=session_id)
+            socketio.emit('question_state_update', {
+                'question_state': chat_sessions[session_id]['question_state'],
+                'current_question': generated_questions[0],
+                'total_questions': len(generated_questions)
+            }, room=session_id)
+        
+        # Add system message to chat
+        bot_message = {
+            'role': 'assistant',
+            'content': f"I've analyzed your PDF and generated {len(generated_questions)} questions for active recall practice. Let's begin with the first question."
+        }
+        chat_sessions[session_id]['messages'].append(bot_message)
+        
+        return jsonify({
+            'success': True,
+            'message': f"Successfully processed PDF and generated {len(generated_questions)} questions",
+            'questions': generated_questions,
+            'topic': topic
+        })
+        
+    except Exception as e:
+        print(f"Error processing PDF: {str(e)}")
+        # Update UI state to show error
+        if session_id in chat_sessions:
+            chat_sessions[session_id]['ui_state'] = {
+                'is_processing_pdf': False,
+                'pdf_error': f"Error processing PDF: {str(e)}"
+            }
+            # Emit socket event if socket is connected
+            if session_id in socket_sessions:
+                socketio.emit('ui_state_update', chat_sessions[session_id]['ui_state'], room=session_id)
+                
+        return jsonify({'error': f"Error processing PDF: {str(e)}"}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -604,7 +745,12 @@ def text_to_speech():
             
         if not CARTESIA_API_KEY:
             print("Warning: No Cartesia API key set, returning error")
-            return jsonify({'error': 'Cartesia API key not configured'}), 503
+            return jsonify({
+                'error': 'Cartesia API key not configured',
+                'text': text,
+                'fallback_requested': True,
+                'success': False
+            }), 503
             
         print(f"Converting to speech: '{text[:50]}...' (truncated)")
         print(f"Using Cartesia API key: {CARTESIA_API_KEY[:5]}...")
@@ -712,7 +858,12 @@ def stream_text_to_speech():
             
         if not CARTESIA_API_KEY:
             print("Warning: No Cartesia API key set, returning error")
-            return jsonify({'error': 'Cartesia API key not configured'}), 503
+            return jsonify({
+                'error': 'Cartesia API key not configured',
+                'text': text,
+                'fallback_requested': True,
+                'success': False
+            }), 503
             
         print(f"Streaming speech for: '{text[:50]}...' (truncated)")
         print(f"Using voice: {voice_id}")
@@ -825,7 +976,12 @@ def cancel_tts():
             
         if not CARTESIA_API_KEY:
             print("Warning: No Cartesia API key set, returning error")
-            return jsonify({'error': 'Cartesia API key not configured'}), 503
+            return jsonify({
+                'error': 'Cartesia API key not configured',
+                'text': text,
+                'fallback_requested': True,
+                'success': False
+            }), 503
             
         # Initialize Cartesia SDK client
         import cartesia
@@ -865,7 +1021,12 @@ def list_tts_voices():
     try:
         if not CARTESIA_API_KEY:
             print("Warning: No Cartesia API key set, returning error")
-            return jsonify({'error': 'Cartesia API key not configured'}), 503
+            return jsonify({
+                'error': 'Cartesia API key not configured',
+                'text': text,
+                'fallback_requested': True,
+                'success': False
+            }), 503
             
         # Initialize Cartesia SDK client
         import cartesia
@@ -1203,6 +1364,17 @@ def process_tts_queue():
         if 'ui_state' in chat_sessions[session_id]:
             chat_sessions[session_id]['ui_state']['is_assistant_speaking'] = True
         
+        # Check if Cartesia API is configured
+        if not CARTESIA_API_KEY:
+            print("Warning: Cartesia API key not set, returning text for browser TTS")
+            # Return the text for browser-based TTS
+            return jsonify({
+                'error': 'Cartesia API key not configured',
+                'text': next_request['text'],
+                'fallback_requested': True,
+                'success': False
+            }), 503
+        
         # Process the request by redirecting to the appropriate endpoint
         if next_request['is_streaming']:
             # For streaming, redirect to the streaming endpoint
@@ -1505,147 +1677,410 @@ def process_audio_chunk():
 
 def handle_topic_identification(user_message, session_data):
     """
-    Handle the initial conversation where we identify what topic the user wants to review.
-    Returns the assistant's message object and response text.
+    Handle initial message to identify the topic for review.
+    Returns a tuple of (response_message, response_text)
     """
-    # Use the model to analyze the user's topic
-    topic_analysis = analyze_review_topic(user_message)
-    session_data['current_topic'] = topic_analysis
+    # Extract topic and difficulty from message
+    topic_info = analyze_review_topic(user_message)
+    topic = topic_info['topic']
+    difficulty = topic_info.get('difficulty', 'mixed')  # Default to mixed if not specified
     
-    # Generate questions for this topic
-    questions = generate_active_recall_questions(topic_analysis)
-    session_data['generated_questions'] = questions
+    if not topic:
+        # If topic wasn't clearly identified, ask for clarification
+        response_text = "I'd be happy to help you study! Please specify what topic you'd like to review. For example, 'I want to review photosynthesis' or 'Help me study Spanish verb conjugation'."
+        return {"role": "assistant", "content": response_text}, response_text
+    
+    # Generate questions based on the identified topic and difficulty
+    questions = generate_active_recall_questions(topic, difficulty)
     
     if not questions:
-        response_text = f"I'm having trouble generating questions about {topic_analysis}. Could you provide more details about what specific aspects you'd like to review?"
-    else:
-        # Select first question to start with
-        first_question = questions[0]
-        
-        response_text = f"Great! I'll help you review {topic_analysis} using active recall. I've prepared several questions to test your knowledge.\n\nLet's start with this question: {first_question}\n\nTry to answer it as thoroughly as you can!"
+        # Handle case where question generation failed
+        response_text = f"I apologize, but I couldn't generate questions about {topic}. Could you please try a different topic or phrase it differently?"
+        return {"role": "assistant", "content": response_text}, response_text
     
-    response_message = {
-        'role': 'assistant',
-        'content': response_text
+    # Store the topic and generated questions
+    session_data['current_topic'] = topic
+    session_data['topic_difficulty'] = difficulty
+    session_data['generated_questions'] = questions
+    session_data['question_state'] = {
+        'current_index': 0,
+        'total': len(questions),
+        'difficulty': difficulty,
+        'correct_count': 0,
+        'incorrect_count': 0
     }
     
-    return response_message, response_text
+    # Format response with difficulty information
+    difficulty_display = difficulty.capitalize() if difficulty != 'mixed' else 'Mixed (Basic to Advanced)'
+    response_text = f"Great! I'll help you review {topic} at {difficulty_display} difficulty level. I've prepared {len(questions)} active recall questions to test your knowledge. Let's start:\n\n{questions[0]}"
+    
+    return {"role": "assistant", "content": response_text}, response_text
 
 def handle_ongoing_conversation(user_message, session_data):
     """
-    Handle the ongoing conversation after a topic has been identified.
-    This could be feedback on questions, requests for hints, or new topic requests.
+    Handle conversation after the topic has been established.
+    Returns a tuple of (response_message, response_text)
     """
-    # Analyze if the user wants to change the topic
+    # Check if the user wants to change topics or difficulty
     if is_new_topic_request(user_message):
-        # Reset the conversation to start a new topic
-        new_topic = extract_new_topic(user_message)
-        session_data['current_topic'] = new_topic
+        # Extract new topic info
+        topic_info = extract_new_topic(user_message)
         
-        # Generate new questions
-        questions = generate_active_recall_questions(new_topic)
-        session_data['generated_questions'] = questions
+        if topic_info['topic']:
+            # Generate new questions for the new topic
+            questions = generate_active_recall_questions(topic_info['topic'], topic_info['difficulty'])
+            
+            if questions:
+                # Update session with new topic and questions
+                session_data['current_topic'] = topic_info['topic']
+                session_data['topic_difficulty'] = topic_info['difficulty']
+                session_data['generated_questions'] = questions
+                session_data['question_state'] = {
+                    'current_index': 0,
+                    'total': len(questions),
+                    'difficulty': topic_info['difficulty'],
+                    'correct_count': 0,
+                    'incorrect_count': 0
+                }
+                
+                # Format response with difficulty information
+                difficulty_display = topic_info['difficulty'].capitalize() 
+                if topic_info['difficulty'] == 'mixed':
+                    difficulty_display = 'Mixed (Basic to Advanced)'
+                    
+                response_text = f"I've switched to helping you review {topic_info['topic']} at {difficulty_display} difficulty level. I've prepared {len(questions)} new questions. Let's start:\n\n{questions[0]}"
+                return {"role": "assistant", "content": response_text}, response_text
+            else:
+                response_text = f"I couldn't generate questions about {topic_info['topic']}. Could you try a different topic?"
+                return {"role": "assistant", "content": response_text}, response_text
+    
+    # Check if user is asking for the next question
+    if is_next_question_request(user_message):
+        return handle_next_question(session_data)
+    
+    # Check if user wants to change difficulty without changing topic
+    if is_difficulty_change_request(user_message):
+        new_difficulty = extract_difficulty(user_message)
+        if new_difficulty:
+            current_topic = session_data['current_topic']
+            # Generate new questions with new difficulty
+            questions = generate_active_recall_questions(current_topic, new_difficulty)
+            
+            if questions:
+                # Update session
+                session_data['topic_difficulty'] = new_difficulty
+                session_data['generated_questions'] = questions
+                session_data['question_state'] = {
+                    'current_index': 0,
+                    'total': len(questions),
+                    'difficulty': new_difficulty,
+                    'correct_count': 0,
+                    'incorrect_count': 0
+                }
+                
+                difficulty_display = new_difficulty.capitalize()
+                if new_difficulty == 'mixed':
+                    difficulty_display = 'Mixed (Basic to Advanced)'
+                    
+                response_text = f"I've updated the difficulty to {difficulty_display} for topic {current_topic}. Here's your first question:\n\n{questions[0]}"
+                return {"role": "assistant", "content": response_text}, response_text
+    
+    # Default: Provide feedback on the user's answer
+    return generate_feedback_or_hint(user_message, session_data)
+
+def is_next_question_request(message):
+    """Check if user is asking for the next question."""
+    patterns = [
+        r"(?i)(?:next|another|different) question",
+        r"(?i)next",
+        r"(?i)give me (?:another|the next)",
+        r"(?i)move(?: on)?(?: to next)?",
+        r"(?i)let's continue"
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, message):
+            return True
+    return False
+
+def handle_next_question(session_data):
+    """Handle a request for the next question."""
+    questions = session_data.get('generated_questions', [])
+    
+    if not questions:
+        response_text = "I don't have any questions prepared. Let's establish a topic first."
+        return {"role": "assistant", "content": response_text}, response_text
+    
+    # Get current question state
+    question_state = session_data.get('question_state', {'current_index': 0})
+    current_index = question_state.get('current_index', 0)
+    
+    # Move to next question
+    next_index = current_index + 1
+    
+    # Check if we've reached the end of questions
+    if next_index >= len(questions):
+        # We've completed all questions
+        correct = question_state.get('correct_count', 0)
+        total = len(questions)
+        accuracy = (correct / total) * 100 if total > 0 else 0
         
-        response_text = f"Switching to {new_topic}. I've prepared new active recall questions for you to practice with."
-    elif "hint" in user_message.lower() or "help" in user_message.lower():
-        # The user is asking for a hint
-        response_text = generate_hint(user_message, session_data)
+        response_text = f"You've completed all {total} questions on {session_data['current_topic']}! "
+        response_text += f"You correctly answered approximately {correct} questions ({accuracy:.1f}% accuracy). "
+        
+        if accuracy < 70:
+            response_text += "Would you like to try again with the same questions, or would you prefer a different topic or difficulty level?"
+        else:
+            response_text += "Great job! Would you like to try a different topic or difficulty level?"
+            
+        # Reset index to 0 for potential reuse
+        question_state['current_index'] = 0
     else:
-        # Provide feedback on the user's answer to a question
-        response_text = generate_feedback_or_hint(user_message, session_data)
+        # Update index and get next question
+        question_state['current_index'] = next_index
+        next_question = questions[next_index]
+        response_text = f"Question {next_index + 1} of {len(questions)}:\n\n{next_question}"
     
-    response_message = {
-        'role': 'assistant',
-        'content': response_text
-    }
+    # Update session data
+    session_data['question_state'] = question_state
     
-    return response_message, response_text
+    return {"role": "assistant", "content": response_text}, response_text
+
+def is_difficulty_change_request(message):
+    """Check if user is asking to change the difficulty level."""
+    patterns = [
+        r"(?i)(?:change|switch|adjust) (?:the )?difficulty",
+        r"(?i)make (?:it|the questions) (?:easier|harder|more difficult|simpler)",
+        r"(?i)(?:easier|harder|more advanced|more basic) questions",
+        r"(?i)(?:basic|beginner|intermediate|advanced|mixed) (?:difficulty|level|mode)"
+    ]
+    
+    for pattern in patterns:
+        if re.search(pattern, message):
+            return True
+    return False
+
+def extract_difficulty(message):
+    """Extract the requested difficulty level from the message."""
+    if re.search(r"(?i)(?:basic|beginner|elementary|simple|easy)", message):
+        return 'basic'
+    elif re.search(r"(?i)(?:intermediate|moderate|medium)", message):
+        return 'intermediate'
+    elif re.search(r"(?i)(?:advanced|difficult|complex|hard|challenging)", message):
+        return 'advanced'
+    elif re.search(r"(?i)(?:mixed|varied|all levels|different levels)", message):
+        return 'mixed'
+    else:
+        return None
 
 def analyze_review_topic(user_input):
     """
-    Use the model to analyze what topic the user wants to review.
+    Analyze the user's message to extract the review topic and difficulty level.
+    Returns a dict with topic and difficulty.
     """
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are an educational assistant helping identify study topics."},
-                {"role": "user", "content": f"I want to review and practice active recall for this topic: '{user_input}'. Please identify the specific academic subject/topic I want to review, and respond with ONLY the name of that topic. Don't include prefixes, explanations, or any other text."}
-            ],
-            temperature=0.3,
-            max_tokens=50
-        )
-        
-        # Extract the topic
-        topic = response.choices[0].message.content.strip()
-        return topic
-    except Exception as e:
-        print(f"Error in analyze_review_topic: {str(e)}")
-        # Fallback to using the raw user input as the topic
-        return user_input.strip()
+    # Look for explicit topic indicators
+    topic_indicators = [
+        r"(?i)(?:help me|I want to|I'd like to|can you help me|I need to|let's|let me) (?:review|study|learn|practice|go over|understand) ([\w\s\-']+)",
+        r"(?i)(?:review|study|learn about|practice|quiz me on|test me on) ([\w\s\-']+)",
+        r"(?i)I'm (?:studying|learning|reviewing) ([\w\s\-']+)",
+        r"(?i)(?:questions|quiz|test) (?:about|on|regarding|for|related to) ([\w\s\-']+)"
+    ]
+    
+    # Look for difficulty indicators
+    difficulty_patterns = {
+        'basic': r"(?i)(?:basic|beginner|elementary|simple|easy|introductory|fundamental)",
+        'intermediate': r"(?i)(?:intermediate|moderate|medium|middle-level)",
+        'advanced': r"(?i)(?:advanced|difficult|complex|hard|expert|challenging|in-depth)",
+        'mixed': r"(?i)(?:mixed|varied|all levels|different levels|range of)"
+    }
+    
+    # Extract topic
+    topic = None
+    for pattern in topic_indicators:
+        match = re.search(pattern, user_input)
+        if match:
+            topic = match.group(1).strip().rstrip(".,?!").strip()
+            break
+    
+    # If no structured pattern matched, just use the whole input as topic
+    if not topic:
+        # Remove common phrases that aren't part of the topic
+        cleaned_input = re.sub(r"(?i)(?:please |can you |I want to |help me |quiz me |test me )", "", user_input)
+        topic = cleaned_input.strip().rstrip(".,?!").strip()
+    
+    # Extract difficulty
+    difficulty = 'mixed'  # default
+    for level, pattern in difficulty_patterns.items():
+        if re.search(pattern, user_input):
+            difficulty = level
+            break
+    
+    result = {
+        'topic': topic,
+        'difficulty': difficulty
+    }
+    
+    print(f"Analyzed topic: '{topic}', Difficulty: {difficulty}")
+    return result
 
-def generate_active_recall_questions(topic):
-    """
-    Generate active recall questions for a specific topic.
-    """
+def generate_active_recall_questions(topic, difficulty='mixed'):
+    """Generate active recall questions for a given topic with specified difficulty level."""
     try:
-        enhanced_prompt = create_topic_based_prompt(topic)
+        # Create a prompt based on the topic and difficulty
+        prompt = create_topic_based_prompt(topic, difficulty)
         
-        response = openai.chat.completions.create(
-            model="gpt-4o",
+        # Call OpenAI API
+        response = openai.ChatCompletion.create(
+            model="gpt-4",  # Use GPT-4 for better question quality
             messages=[
-                {"role": "system", "content": "You are an expert educator specialized in creating effective active recall questions to promote deep learning and retention."},
-                {"role": "user", "content": enhanced_prompt}
+                {"role": "system", "content": "You are an expert educator specializing in creating effective active recall questions."},
+                {"role": "user", "content": prompt}
             ],
             temperature=0.7,
-            max_tokens=1000
+            max_tokens=1500
         )
         
-        # Extract and process questions from the response
-        result = response.choices[0].message.content.strip()
+        # Extract and format the questions
+        raw_questions = response.choices[0].message.content.strip()
+        questions = parse_and_validate_questions(raw_questions)
         
-        # Parse and clean questions
-        questions = parse_and_validate_questions(result)
+        if not questions:
+            print(f"Warning: Failed to parse questions for topic '{topic}'")
+            return []
+            
+        print(f"Generated {len(questions)} questions for topic '{topic}' at {difficulty} difficulty")
         return questions
+        
     except Exception as e:
-        print(f"Error in generate_active_recall_questions: {str(e)}")
-        # Return a default question as fallback
-        return [f"Can you explain the key concepts of {topic}?"]
+        print(f"Error generating questions: {str(e)}")
+        return []
 
-def create_topic_based_prompt(topic):
+def create_topic_based_prompt(topic, difficulty='mixed'):
+    """Create a specialized prompt based on topic and difficulty level."""
+    
+    # Base prompt structure
+    base_prompt = f"""
+Generate 5-8 active recall questions about "{topic}".
     """
-    Create a prompt for generating active recall questions on a specific topic.
-    """
-    return f"""
-I need you to create high-quality active recall questions based on the topic of {topic}.
-
-## What is Active Recall?
-Active recall is a principle of effective learning where answering questions forces the retrieval of information from memory, strengthening neural connections and improving long-term retention. Unlike recognition questions, active recall questions require retrieving specific information without being presented with options.
-
-## Guidelines for Creating Active Recall Questions:
-1. SPECIFICITY: Focus on specific facts, concepts, mechanisms, and relationships within the topic of {topic}.
-2. RETRIEVAL FOCUS: Questions should require retrieving information from memory, not just recognizing it.
-3. DIVERSE FORMATS: Include different question types:
-   - Definition/explanation questions ("What is...?" "Explain the concept of...")
-   - Process/mechanism questions ("How does...?" "Describe the process of...")
-   - Compare/contrast questions ("What's the difference between...?")
-   - Application questions ("How would you apply...?")
-   - Cause/effect questions ("What happens when...?" "What causes...?")
-4. COMPLEXITY: Include questions with varying levels of difficulty - from basic recall to more complex application.
-
-## Examples of Good Active Recall Questions:
-- "What are the three key components of {topic}?"
-- "Explain the mechanism by which [related process] works in {topic}."
-- "What are the primary differences between [related concept A] and [related concept B] in {topic}?"
-
-## Examples of Poor Questions to Avoid:
-- Questions that are too general ("What is {topic}?")
-- Yes/no questions that don't require detailed recall
-- Questions answerable without understanding the material
-
-## Instructions:
-Generate 10 active recall questions about {topic}. Format each question as a numbered list (1., 2., etc.). Make sure the questions cover different aspects and difficulty levels.
+    
+    # Add difficulty-specific instructions
+    difficulty_instructions = {
+        'basic': """
+Focus on foundational concepts and definitions.
+These questions should help beginners establish a basic understanding of the topic.
+Use straightforward language and clear, unambiguous questions.
+""",
+        'intermediate': """
+Target intermediate understanding with questions that explore relationships between concepts.
+Include questions that require application of knowledge, not just recall.
+Incorporate some technical terminology appropriate for someone with some background.
+""",
+        'advanced': """
+Create challenging questions that require deep understanding and critical thinking.
+Include questions on complex applications, edge cases, and advanced theories.
+Use precise technical terminology and expect sophisticated understanding.
+""",
+        'mixed': """
+Provide a balanced mix of basic, intermediate, and advanced questions.
+Label each question with its difficulty level (Basic, Intermediate, Advanced).
+Progress from simpler to more complex concepts to build understanding.
 """
+    }
+    
+    # Add subject-specific instructions based on topic analysis
+    subject_type = analyze_topic_type(topic)
+    subject_instructions = {
+        'math': """
+Include some questions requiring step-by-step problem-solving.
+Focus on conceptual understanding alongside procedural knowledge.
+For formulas, ask about their applications and meanings, not just memorization.
+""",
+        'science': """
+Include questions about experiments, evidence, and scientific models.
+Ask about cause-effect relationships and applications of scientific principles.
+Balance theoretical questions with practical applications.
+""",
+        'history': """
+Include questions about chronology, cause-effect relationships, and historical significance.
+Ask about different perspectives and interpretations of historical events.
+Balance factual recall with questions about historical processes and themes.
+""",
+        'language': """
+Include questions about grammar rules, vocabulary application, and language constructs.
+Ask about practical usage and exceptions to rules.
+Include contextual examples to test understanding.
+""",
+        'arts': """
+Include questions about techniques, historical context, and interpretative aspects.
+Balance factual knowledge with questions about aesthetic principles.
+Ask about influential works and their significance.
+""",
+        'technology': """
+Include questions about principles, implementations, and practical applications.
+Ask about evolution of technologies and their impact.
+Balance theoretical understanding with practical usage scenarios.
+""",
+        'general': """
+Cover key concepts, applications, and relationships within the topic.
+Include questions that test both recall and understanding.
+Balance breadth and depth of the topic.
+"""
+    }
+    
+    # Format instructions based on difficulty and topic
+    difficulty_instruction = difficulty_instructions.get(difficulty, difficulty_instructions['mixed'])
+    subject_instruction = subject_instructions.get(subject_type, subject_instructions['general'])
+    
+    # Combine all instructions into the final prompt
+    final_prompt = f"""{base_prompt}
+
+Difficulty level: {difficulty.capitalize()}
+{difficulty_instruction}
+
+Topic-specific guidance:
+{subject_instruction}
+
+Format guidelines:
+1. Each question should be self-contained and clear.
+2. Avoid overly complex or compound questions.
+3. Ensure questions are directly related to the topic.
+4. Format each question on its own line without numbering or prefixes.
+5. If using "mixed" difficulty, label each question with its level: [Basic], [Intermediate], or [Advanced].
+
+Examples of well-formed questions:
+- What is the primary function of mitochondria in a cell?
+- How does Newton's Third Law apply to rocket propulsion?
+- What factors contributed to the fall of the Roman Empire?
+
+Return ONLY the questions themselves, one per line, without explanations or additional text.
+"""
+    
+    return final_prompt
+
+def analyze_topic_type(topic):
+    """Analyze the topic to determine what subject category it falls into."""
+    
+    # Convert to lowercase for easier matching
+    topic_lower = topic.lower()
+    
+    # Keywords for different subject areas
+    subject_keywords = {
+        'math': ['math', 'algebra', 'calculus', 'geometry', 'statistics', 'probability', 'equation', 'function', 'theorem', 'number'],
+        'science': ['science', 'biology', 'chemistry', 'physics', 'astronomy', 'geology', 'molecule', 'cell', 'atom', 'energy', 'force'],
+        'history': ['history', 'war', 'civilization', 'empire', 'revolution', 'century', 'ancient', 'medieval', 'modern', 'president', 'king'],
+        'language': ['language', 'grammar', 'syntax', 'vocabulary', 'literature', 'writing', 'reading', 'speaking', 'english', 'spanish'],
+        'arts': ['art', 'music', 'painting', 'sculpture', 'dance', 'theater', 'film', 'design', 'photography', 'architecture'],
+        'technology': ['technology', 'computer', 'software', 'hardware', 'programming', 'code', 'algorithm', 'data', 'internet', 'digital']
+    }
+    
+    # Check for keyword matches
+    for subject, keywords in subject_keywords.items():
+        for keyword in keywords:
+            if keyword in topic_lower:
+                return subject
+    
+    # Default to general if no specific matches
+    return 'general'
 
 def parse_and_validate_questions(raw_questions):
     """
@@ -1710,75 +2145,115 @@ def is_new_topic_request(message):
     return any(phrase in message_lower for phrase in topic_change_phrases)
 
 def extract_new_topic(message):
-    """
-    Extract the new topic from a topic change request.
-    """
-    try:
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are an educational assistant helping identify study topics."},
-                {"role": "user", "content": f"The user has indicated they want to change topics with this message: '{message}'. Please identify the specific new academic subject/topic they want to review, and respond with ONLY the name of that topic. Don't include prefixes, explanations, or any other text."}
-            ],
-            temperature=0.3,
-            max_tokens=50
-        )
-        
-        # Extract the topic
-        topic = response.choices[0].message.content.strip()
-        return topic
-    except Exception as e:
-        print(f"Error in extract_new_topic: {str(e)}")
-        # Fallback to extracting topic directly from message
-        # Remove common phrases that indicate topic change
-        clean_message = message.lower()
-        for phrase in ["let's talk about", "can we discuss", "i want to learn about", "i want to review",
-                      "switch to", "change to", "instead of", "new topic", "different topic"]:
-            clean_message = clean_message.replace(phrase, "")
-        return clean_message.strip()
+    """Extract a new topic request from the user message."""
+    topic_info = analyze_review_topic(message)
+    return topic_info
 
 def generate_feedback_or_hint(user_message, session_data):
     """
-    Generate feedback on the user's answer or provide a hint.
+    Generate feedback or hint based on the user's response to a question.
     """
-    topic = session_data['current_topic']
-    questions = session_data['generated_questions']
-    chat_history = session_data['messages']
+    # Get current question
+    questions = session_data.get('generated_questions', [])
+    question_state = session_data.get('question_state', {'current_index': 0})
+    current_index = question_state.get('current_index', 0)
+    
+    if not questions or current_index >= len(questions):
+        response_text = "I'm not sure what question you're answering. Let's start with a topic first."
+        return {"role": "assistant", "content": response_text}, response_text
+    
+    current_question = questions[current_index]
+    current_topic = session_data.get('current_topic', 'the topic')
+    current_difficulty = session_data.get('topic_difficulty', 'mixed')
+    
+    # Check if this is a hint request
+    is_hint_request = "hint" in user_message.lower() or "help" in user_message.lower()
     
     try:
-        # Find the last question discussed or most relevant question
-        relevant_question = identify_relevant_question(chat_history, questions)
-        
-        # Construct a prompt that includes the context
-        context_messages = chat_history[-6:] if len(chat_history) >= 6 else chat_history
-        context_prompt = "\n".join([
-            f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['content']}" 
-            for msg in context_messages if msg['role'] in ['user', 'assistant']
-        ])
-        
-        system_prompt = f"""You are an expert educational assistant helping a student with active recall on the topic of {topic}. 
-The student has been asked this question: "{relevant_question or 'a question about ' + topic}"
-They've provided an answer attempt. Your job is to:
-1. Determine if their answer is correct, partially correct, or incorrect
-2. Provide specific, constructive feedback highlighting what they got right and wrong
-3. Give encouragement and advice on how to improve their understanding
-4. Be concise but educational in your response (max 2-3 sentences)"""
-        
-        response = openai.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Topic: {topic}\n\nRecent conversation:\n{context_prompt}\n\nThe user's most recent response: \"{user_message}\"\n\nProvide specific, helpful feedback on their answer."}
-            ],
-            temperature=0.7,
-            max_tokens=200
-        )
-        
-        return response.choices[0].message.content.strip()
+        if is_hint_request:
+            # Generate a hint based on the question
+            prompt = f"""
+The student is asking for a hint on this question: "{current_question}"
+The topic is "{current_topic}" and the difficulty level is "{current_difficulty}".
+
+Provide a helpful hint that guides them toward the answer without giving it away completely.
+For basic questions, the hint can be more direct.
+For intermediate questions, provide some guidance but let them make connections.
+For advanced questions, give minimal hints that prompt critical thinking.
+
+Write a brief, helpful hint:
+"""
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a helpful educational assistant providing hints."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=150
+            )
+            
+            hint_text = response.choices[0].message.content.strip()
+            return {"role": "assistant", "content": hint_text}, hint_text
+            
+        else:
+            # Generate feedback on the user's answer
+            prompt = f"""
+Question: "{current_question}"
+Student's answer: "{user_message}"
+Topic: "{current_topic}"
+Difficulty: "{current_difficulty}"
+
+Evaluate the answer and provide constructive feedback:
+1. Is the answer correct, partially correct, or incorrect?
+2. What aspects of the answer are good or need improvement?
+3. What key concepts should be emphasized?
+
+For basic questions, focus on accuracy of fundamental facts.
+For intermediate questions, assess application of concepts.
+For advanced questions, evaluate depth of understanding and critical thinking.
+
+Provide a brief, helpful feedback response:
+"""
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a helpful educational assistant evaluating answers."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=250
+            )
+            
+            feedback_text = response.choices[0].message.content.strip()
+            
+            # Determine if the answer was correct for tracking
+            answer_quality = "incorrect"
+            if "correct" in feedback_text.lower() and not "incorrect" in feedback_text.lower():
+                answer_quality = "correct"
+                question_state['correct_count'] = question_state.get('correct_count', 0) + 1
+            elif "partially correct" in feedback_text.lower():
+                answer_quality = "partially correct"
+                # Count partial answers as 0.5 correct
+                question_state['correct_count'] = question_state.get('correct_count', 0) + 0.5
+            else:
+                question_state['incorrect_count'] = question_state.get('incorrect_count', 0) + 1
+                
+            # Update session data
+            session_data['question_state'] = question_state
+            
+            # Add next question prompt if appropriate
+            if answer_quality == "correct":
+                feedback_text += "\n\nReady for the next question? Just say 'next'."
+                
+            return {"role": "assistant", "content": feedback_text}, feedback_text
+            
     except Exception as e:
-        print(f"Error in generate_feedback_or_hint: {str(e)}")
-        # Provide a generic response as fallback
-        return "I see your thoughts on this. Can you elaborate more on your understanding of the key concepts involved?"
+        print(f"Error generating feedback: {str(e)}")
+        response_text = "I apologize, but I'm having trouble evaluating your answer. Let's try again or move to the next question."
+        return {"role": "assistant", "content": response_text}, response_text
 
 def identify_relevant_question(chat_history, questions):
     """
@@ -1831,6 +2306,13 @@ def generate_hint(user_message, session_data):
         # Provide a generic hint as fallback
         return "Think about the key concepts we've discussed so far. What fundamental principles might apply here?"
 
+@app.route('/test-tts-page')
+def test_tts_page():
+    """
+    Serve the TTS test page
+    """
+    return render_template('tts_test.html')
+
 if __name__ == '__main__':
     # Check if OpenAI API key is set
     if not openai.api_key:
@@ -1840,7 +2322,7 @@ if __name__ == '__main__':
         
     # Check if Cartesia API key is set
     if not CARTESIA_API_KEY:
-        print("WARNING: Cartesia API key is not set. Text-to-speech will use fallback method.")
+        print("WARNING: Cartesia API key is not set. Text-to-speech will use browser fallback method.")
     else:
         print(f"Cartesia API key loaded successfully (first 5 chars): {CARTESIA_API_KEY[:5]}...")
     
@@ -1855,4 +2337,14 @@ if __name__ == '__main__':
         socketio.run(app, debug=True, host='localhost', port=5001)
     else:
         print(f"SSL certificate files found. Running with HTTPS enabled.")
-        socketio.run(app, debug=True, host='localhost', port=5001, ssl_context=(cert_file, key_file)) 
+        # Create SSL context for Flask instead of passing directly to eventlet
+        try:
+            import ssl
+            ssl_context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ssl_context.load_cert_chain(certfile=cert_file, keyfile=key_file)
+            # Use socketio.run without SSL - we'll apply SSL at the Flask level
+            socketio.run(app, debug=True, host='localhost', port=5001)
+        except Exception as e:
+            print(f"Error setting up SSL: {str(e)}")
+            print("Falling back to non-SSL mode")
+            socketio.run(app, debug=True, host='localhost', port=5001) 

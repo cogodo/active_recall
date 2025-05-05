@@ -13,20 +13,20 @@
 
     <div class="instructions">
         <h3>How to use this assistant:</h3>
-        <p>1. Tell me what topic you want to review (e.g., "I want to review photosynthesis" or "Help me practice
-            JavaScript closures")</p>
-        <p>2. I'll generate active recall questions about your topic</p>
+        <p>1. Select a difficulty level and tell me what topic you want to review</p>
+        <p>2. I'll generate active recall questions about your topic at the appropriate difficulty</p>
         <p>3. Try to answer each question to test your knowledge</p>
         <p>4. Get feedback or ask for hints if you're stuck</p>
-        <p>5. Change topics anytime by saying "I want to review [new topic]"</p>
+        <p>5. Change topics or difficulty anytime by asking</p>
 
         <h3>Voice Commands:</h3>
-        <p>• Click the 🎤 microphone button to enter voice conversation mode (powered by Whisper)</p>
+        <p>• Click the 🎤 microphone button to enter voice conversation mode</p>
         <p>• <strong>Browser will ask for microphone permission</strong> - you must allow this to use voice features</p>
         <p>• Voice levels will be displayed to show when you're speaking</p>
         <p>• In voice conversation mode, just speak naturally - pauses are detected automatically</p>
         <p>• Say "hint" or "help" to get assistance with the current question</p>
         <p>• Say "next question" or "next" to move to the next question</p>
+        <p>• Say "make it easier/harder" to change difficulty</p>
         <p>• Say "repeat" or "say again" to have the last response repeated</p>
         <p>• Say "stop listening" to exit voice conversation mode</p>
         <p>• Say "clear chat" to start a fresh conversation</p>
@@ -34,12 +34,41 @@
         <p class="security-note">• This app runs on <strong>localhost</strong> for safe testing</p>
     </div>
 
+    <div class="difficulty-selector">
+        <h3>Select Difficulty Level</h3>
+        <div class="difficulty-buttons">
+            <button id="basic-difficulty" class="difficulty-button" data-difficulty="basic">Basic</button>
+            <button id="intermediate-difficulty" class="difficulty-button"
+                data-difficulty="intermediate">Intermediate</button>
+            <button id="advanced-difficulty" class="difficulty-button" data-difficulty="advanced">Advanced</button>
+            <button id="mixed-difficulty" class="difficulty-button active" data-difficulty="mixed">Mixed</button>
+        </div>
+        <p class="difficulty-description" id="difficulty-description">
+            Mixed: Questions ranging from basic to advanced to provide comprehensive practice.
+        </p>
+    </div>
+
+    <div class="pdf-upload-container">
+        <h3>Upload PDF for Study</h3>
+        <p>Upload a PDF document to generate active recall questions from its content.</p>
+        <div class="pdf-upload-form">
+            <input type="file" id="pdf-file-input" accept=".pdf" />
+            <button id="pdf-upload-button">Upload & Generate Questions</button>
+        </div>
+        <div id="pdf-upload-status" class="pdf-status">
+            <div id="pdf-progress-container" class="progress-container">
+                <div id="pdf-progress-bar" class="progress-bar"></div>
+            </div>
+            <div id="pdf-status-message"></div>
+        </div>
+    </div>
+
     <div class="chat-container">
         <div class="chat-area">
             <div id="chat-messages" class="chat-messages"></div>
             <div id="typing-indicator" class="typing-indicator">Assistant is typing...</div>
             <div class="chat-input">
-                <input type="text" id="user-input" placeholder="Ask Spaced">
+                <input type="text" id="user-input" placeholder="Enter a topic you want to study...">
                 <button id="send-button">Send</button>
                 <div class="voice-controls">
                     <button id="mic-button" class="mic-button" title="Click to toggle voice conversation mode">
@@ -55,14 +84,29 @@
         </div>
         <div class="question-area">
             <h2>Study Questions</h2>
-            <p>After you specify a topic, active recall questions will appear here.</p>
+            <p id="questions-info">After you specify a topic, active recall questions will appear here.</p>
+            <div class="progress-tracker">
+                <div class="progress-label">Progress: <span id="progress-count">0/0</span></div>
+                <div class="progress-bar-container">
+                    <div id="progress-bar" class="progress-bar"></div>
+                </div>
+                <div id="accuracy-display">Accuracy: <span id="accuracy-percent">0%</span></div>
+            </div>
             <div id="questions-list"></div>
+            <div id="question-controls">
+                <button id="next-question-button" disabled>Next Question</button>
+                <button id="hint-button" disabled>Get Hint</button>
+            </div>
+            <div id="question-metadata">
+                <div id="difficulty-indicator"></div>
+                <div id="question-number"></div>
+            </div>
         </div>
     </div>
 
     <div id="error-message" class="error"></div>
 
-    <div id="continuous-indicator" class="continuous-mode-indicator">Voice Conversation Mode Active (OpenAI Whisper API)
+    <div id="continuous-indicator" class="continuous-mode-indicator">Voice Conversation Mode Active (Whisper API)
     </div>
 
     <!-- Audio visualizer for showing speech levels -->
@@ -72,7 +116,7 @@
         </div>
         <div class="recording-indicator">
             <div class="recording-dot"></div>
-            <div class="recording-label">Listening with OpenAI Whisper...</div>
+            <div class="recording-label">Listening with Whisper...</div>
         </div>
     </div>
 
